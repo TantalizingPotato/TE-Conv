@@ -4,8 +4,9 @@ from models import EdgeLinkPredictor
 
 from torch_geometric.nn import TAGConv
 
+
 class E2EModel(torch.nn.Module):
-    def  __init__(self, in_channels, embedding_dim, msg_dim, time_enc, device):
+    def __init__(self, in_channels, embedding_dim, msg_dim, time_enc, device):
         super(E2EModel, self).__init__()
         self.time_enc = time_enc
         # edge_dim = msg_dim + time_enc.out_channels
@@ -25,7 +26,7 @@ class E2EModel(torch.nn.Module):
         rel_t_enc = self.time_enc(batch.ts)
         # edge_attr = torch.cat([rel_t_enc, edge_attr], dim=-1)
 
-        x = torch.cat([batch.x, rel_t_enc, x],dim=-1)
+        x = torch.cat([batch.x, rel_t_enc, x], dim=-1)
         # print("edge_index.size():", edge_index.size())
         # print("edge_attr.size():", edge_attr.size())
         x = self.conv(x, edge_index)
@@ -38,7 +39,7 @@ class E2EModel(torch.nn.Module):
         # set_indices, batch, num_graphs = batch.set_indices, batch.batch, batch.num_graphs
         # set_indices = set_indices.view(-1, 2)
         # num_nodes = torch.eye(num_graphs)[batch].to(device).sum(dim=0)
-        _ , num_nodes = batch.batch.unique_consecutive(return_counts=True)
+        _, num_nodes = batch.batch.unique_consecutive(return_counts=True)
         assert len(num_nodes) == batch.num_graphs
         zero = torch.tensor([0], dtype=torch.long).to(device)
         indices = torch.cat([zero, torch.cumsum(num_nodes, dim=0, dtype=torch.long)[:-1]])
