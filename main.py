@@ -15,65 +15,9 @@ from abstract_sum import AbstractSum, DyrepAbstractSum
 from distance_encoding import distance_encoding
 from arg_parser import get_args
 
-# if MODE == "distance_encoding": USE_NEIGHBOR_FINDER=True rank_score="link_pred"
-# TIME_ENCODING=False EDGE_ATTRIBUTE=False
-MODE = "dyrep"
-USE_EMBEDDING = True
-USE_MEMORY_EMBEDDING = False
-NAME = "wikipedia"
-# RANK_SCORE = "likelihood"
-RANK_SCORE = "intensity"
-# RANK_SCORE = "link_pred"
-BATCH_SIZE = 1
-NUM_EPOCH = 500
-LEARNING_RATE = 0.001
-BACKPROP_EVERY_N_BATCHES = 20
-NODE_FEATURE_DIM = 100
-MEMORY_DIM = 100
-TIME_DIM = 100
-EMBEDDING_DIM = 100
-TIME_ENCODING = True
-DISTANCE_ENCODING = False
-DE_SHORTEST_PATH = True
-DE_RANDOM_WALK = True
-EDGE_ATTRIBUTE = False
-USE_MSG = False
-N_LAYER = 1
-
-NUM_NEG_SAMPLE = 10
-N_COEFFICIENT = 2
-DYREP_LOSS = True
-
-USE_DYREPABSTRACTSUM = True
-NUM_BASIS = 64
-MC_NUM_SURV = 1
-MC_NUM_TIME = 100
-
-USE_NEIGHBOR_FINDER = True
-
-USE_NEG = False
-SAMPLE_NEG_DST_STRICTLY = True
-CAN_SEE_NEIGHBORS_IN_SAME_BATCH = True
-ONLY_PREDICT_LAST_EVENTS_TIME = True
-
-USE_MEMORY = True
-
-NEIGHBOR_SIZE = 10
-
-DATASET_SIZE = 2000
-
-CPU_ONLY = True
-
-CANDIDATES_FROM = "all_dst"  # "all_dst", "all_nodes" or "neighbors"
-
-# TASK = "link_prediction"
-TASK = "time_prediction"
-
-
-# TASK = "temporal_recommendation"
 
 class TimeEmbedding(torch.nn.Module):
-    def __init__(self, num_nodes, in_channels, out_channels, msg_dim, time_enc, n_layer):
+    def __init__(self, args, num_nodes, in_channels, out_channels, msg_dim, time_enc, n_layer):
         super(TimeEmbedding, self).__init__()
 
         self.in_channels = in_channels
@@ -93,14 +37,19 @@ class TimeEmbedding(torch.nn.Module):
 
 
 class GraphAttentionEmbedding(torch.nn.Module):
-    def __init__(self, num_nodes, in_channels, out_channels, msg_dim, time_enc, n_layer):
+    def __init__(self, args, num_nodes, in_channels, out_channels, msg_dim, time_enc, n_layer):
         super(GraphAttentionEmbedding, self).__init__()
         self.num_nodes = num_nodes
         self.time_enc = time_enc
         self.edge_dim = 0
-        if TIME_ENCODING:
+
+        self.args = args
+        # self.time_encoding = args.time_encoding
+        # self.edge_attribute = args.edge_attribute
+
+        if args.time_encoding:
             self.edge_dim += time_enc.out_channels
-        if EDGE_ATTRIBUTE:
+        if args.edge_attribute:
             self.edge_dim += msg_dim
 
         self.n_layer = n_layer if n_layer > 0 else 1
@@ -115,11 +64,11 @@ class GraphAttentionEmbedding(torch.nn.Module):
     def forward(self, x, edge_index, edge_time, msg):
 
         edge_attr = torch.zeros(edge_index.size(-1), 0).float().to(device)
-        if TIME_ENCODING:
+        if self.args.time_encoding:
             # rel_t = self.last_update[edge_index[1]] - t             # lgh: edge_index[0] -> edge_index[1]
             rel_t_enc = self.time_enc(edge_time.to(x.dtype))
             edge_attr = torch.cat([edge_attr, rel_t_enc], dim=-1)
-        if EDGE_ATTRIBUTE:
+        if self.args.edge_attribute:
             edge_attr = torch.cat([edge_attr, msg], dim=-1)
 
         if self.edge_dim > 0:
@@ -154,10 +103,10 @@ def tgat_link_predict(z_src, z_dst):
     return (z_src * z_dst).sum(dim=-1, keepdim=True).sigmoid()
 
 
-def train(gnn, memory, abstract_sum, link_predictor, optimizer, criterion, train_data,
+def train(args, gnn, memory, abstract_sum, link_predictor, optimizer, criterion, train_data,
           full_t, full_msg, train_nodes, train_dst, statistics):
     # set the models to state of training
-    if USE_MEMORY:
+    if args.use_memory:
         memory.train()
         memory.reset_state()  # Start with a fresh memory.
     gnn.train()
@@ -168,27 +117,28 @@ def train(gnn, memory, abstract_sum, link_predictor, optimizer, criterion, train
 
     total_loss = 0
 
-    num_batch = math.ceil(train_data.num_events / BATCH_SIZE)
+    num_batch = math.ceil(train_data.num_events / args.batch_size)
 
     loss = None
     optimizer.zero_grad()
 
-    for i, batch in tqdm(enumerate(train_data.seq_batches(batch_size=BATCH_SIZE)), total=num_batch):
+    for i, batch in tqdm(enumerate(train_data.seq_batches(batch_size=args.batch_size)), total=num_batch):
 
         src, dst, t, cur_e_id = batch.src, batch.dst, batch.t, batch.e_id
         valid_mask = cur_e_id != -1
         src, dst, t, cur_i_id = src[valid_mask], dst[valid_mask], t[valid_mask], cur_e_id[valid_mask]
         # msg = full_msg[cur_e_id]
 
-        neg_dst = do_neg_sampling(src, dst, train_nodes, train_dst)
+        neg_dst = do_neg_sampling(args, src, dst, train_nodes, train_dst)
 
         dyrep_emb, last_update = None, None
 
-        if MODE == "distance_encoding":
-            z_pos_src, z_neg_src, z_pos_dst, z_neg_dst = get_distance_encoding(gnn, memory, neighbor_finder,
+        if args.mode == "distance_encoding":
+            z_pos_src, z_neg_src, z_pos_dst, z_neg_dst = get_distance_encoding(args, gnn, memory, neighbor_finder,
                                                                                src, dst, neg_dst, t, full_t, full_msg)
         else:
-            dyrep_emb, last_update, z_pos_src, z_neg_src, z_pos_dst, z_neg_dst = get_temporal_embedding(gnn, memory,
+            dyrep_emb, last_update, z_pos_src, z_neg_src, z_pos_dst, z_neg_dst = get_temporal_embedding(args,
+                                                                                                        gnn, memory,
                                                                                                         neighbor_finder,
                                                                                                         src, dst,
                                                                                                         neg_dst,
@@ -197,7 +147,7 @@ def train(gnn, memory, abstract_sum, link_predictor, optimizer, criterion, train
                                                                                                         full_msg,
                                                                                                         statistics)
 
-        loss_cur_batch = compute_loss(abstract_sum, link_predictor, criterion,
+        loss_cur_batch = compute_loss(args, abstract_sum, link_predictor, criterion,
                          src, last_update, t, z_neg_dst, z_neg_src, z_pos_dst, z_pos_src)
 
         if loss is None:
@@ -209,27 +159,27 @@ def train(gnn, memory, abstract_sum, link_predictor, optimizer, criterion, train
 
         total_loss += float(loss_cur_batch) * batch.num_events
 
-        if USE_MEMORY:
-            update_memory(memory, src, dst, t, cur_e_id, full_msg, dyrep_emb)
+        if args.use_memory:
+            update_memory(args.mode, memory, src, dst, t, cur_e_id, full_msg, dyrep_emb)
 
-        if (i + 1) % BACKPROP_EVERY_N_BATCHES == 0 or i + 1 == num_batch:
+        if (i + 1) % args.backprop_every_n_batches == 0 or i + 1 == num_batch:
             loss.backward()  # torch.nn.utils.clip_grad_norm_(all_parameters, max_norm=100, norm_type=2)
             optimizer.step()
             loss = 0
             optimizer.zero_grad()
-            if USE_MEMORY:
+            if args.use_memory:
                 memory.detach()
 
     return total_loss / train_data.num_events
 
 
-def update_memory(memory, src, dst, t, cur_e_id, full_msg, dyrep_emb):
+def update_memory(arg_mode, memory, src, dst, t, cur_e_id, full_msg, dyrep_emb):
     # Update memory and neighbor loader with ground-truth state.
     update_valid_mask = cur_e_id != -1
     valid_src, valid_dst, valid_t, valid_cur_e_id = \
         src[update_valid_mask], dst[update_valid_mask], t[update_valid_mask], cur_e_id[update_valid_mask]
     msg = full_msg[valid_cur_e_id]
-    if MODE == "dyrep":
+    if arg_mode == "dyrep":
         assert dyrep_emb is not None, "dyrep_emb is None"
         # saved_edge_index, saved_e_id, saved_t = edge_index, e_id, t
         memory.update_state(valid_src, valid_dst, valid_t, msg, src_emb=dyrep_emb[:valid_src.size(0)],
@@ -239,42 +189,42 @@ def update_memory(memory, src, dst, t, cur_e_id, full_msg, dyrep_emb):
     seen_nodes.extend(torch.cat([valid_src, valid_dst]).unique().tolist())
 
 
-def compute_loss(abstract_sum, link_predictor, criterion,
+def compute_loss(args, abstract_sum, link_predictor, criterion,
                  src, last_update, t, z_neg_dst, z_neg_src, z_pos_dst, z_pos_src):
     num_src = src.size(0)  # number of pos src
     num_pos = 2 * num_src  # total number of pos src and pos dst
     #  1. the last index of neg dst or 2. the split index for neg src and neg dst
-    neg_split = (2 + NUM_NEG_SAMPLE) * num_src
-    if DYREP_LOSS:
+    neg_split = (2 + args.num_neg_sample) * num_src
+    if args.dyrep_loss:
         last_update_src, last_update_dst = last_update[:num_src], last_update[num_src:num_pos]
         pos_delta_t = (t - torch.max(last_update_src, last_update_dst)).float()
 
         # neg_src is in fact equal to pos_src
         last_update_neg_src, last_update_neg_dst = \
-            last_update_src.repeat_interleave(NUM_NEG_SAMPLE, dim=0), last_update[num_pos:neg_split]
+            last_update_src.repeat_interleave(args.num_neg_sample, dim=0), last_update[num_pos:neg_split]
 
-        delta_t_neg = (t.repeat_interleave(NUM_NEG_SAMPLE) - torch.max(last_update_neg_src,
+        delta_t_neg = (t.repeat_interleave(args.num_neg_sample) - torch.max(last_update_neg_src,
                                                                        last_update_neg_dst)).float()
         loss_cur_batch = - torch.log(abstract_sum.intensity_func(pos_delta_t, z_pos_src, z_pos_dst,
                                                                  return_params=False)).sum() / z_pos_src.size(0)
-        loss_cur_batch += N_COEFFICIENT * abstract_sum.intensity_func(delta_t_neg, z_neg_src, z_neg_dst,
+        loss_cur_batch += args.n_coefficient * abstract_sum.intensity_func(delta_t_neg, z_neg_src, z_neg_dst,
                                                                       return_params=False).sum() / z_neg_src.size(0)
 
     else:
         pos_out = link_predictor(z_pos_src, z_pos_dst)
         neg_out = link_predictor(z_neg_src, z_neg_dst)
         loss_cur_batch = criterion(pos_out, torch.ones_like(pos_out))
-        loss_cur_batch += N_COEFFICIENT * criterion(neg_out, torch.zeros_like(neg_out))
+        loss_cur_batch += args.n_coefficient * criterion(neg_out, torch.zeros_like(neg_out))
     return loss_cur_batch
 
 
-def get_temporal_embedding(gnn, memory, neighbor_finder, src, dst, neg_dst, t, full_t, full_msg, statistics):
+def get_temporal_embedding(args, gnn, memory, neighbor_finder, src, dst, neg_dst, t, full_t, full_msg, statistics):
     num_src = src.size(0)  # number of pos src
     num_pos = 2 * num_src  # total number of pos src and pos dst
     #  1. the last index of neg dst or 2. the split index for neg src and neg dst
-    neg_split = (2 + NUM_NEG_SAMPLE) * num_src
+    neg_split = (2 + args.num_neg_sample) * num_src
 
-    if DYREP_LOSS:
+    if args.dyrep_loss:
         # n_id = torch.cat([src, dst, neg_src, neg_dst])
         n_id = torch.cat([src, dst, neg_dst])
     else:
@@ -282,38 +232,38 @@ def get_temporal_embedding(gnn, memory, neighbor_finder, src, dst, neg_dst, t, f
     num_focused_node = n_id.size(0)
     ratio = int(num_focused_node / num_src)
     # timestamps = t.repeat(3).cpu().numpy()
-    if CAN_SEE_NEIGHBORS_IN_SAME_BATCH:
+    if args.can_see_neighbors_in_same_batch:
         timestamps = t.repeat(int(num_focused_node / src.size(0))).cpu().numpy()
     else:
         timestamps = np.array([t[0].item()]).repeat(num_focused_node)
     n_id, edge_index, e_id, root_id_in_batch = neighbor_finder.get_k_hop_temporal_neighbor(n_id.cpu().numpy(),
                                                                                            timestamps,
-                                                                                           n_neighbors=NEIGHBOR_SIZE,
+                                                                                           args.neighbor_size,
                                                                                            k=1)
     n_id, edge_index, e_id, root_id_in_batch = n_id.to(device), edge_index.to(device), e_id.to(
         device), root_id_in_batch.to(device)
     n_id_unique = n_id.unique()
     n_id_old2new = get_map_tensor(n_id_unique)
 
-    if USE_MEMORY:
+    if args.use_memory:
         z, last_update = memory(n_id_unique)
         z, last_update = z[n_id_old2new[n_id]], last_update[n_id_old2new[n_id]]
     else:
-        z, last_update = torch.zeros(size=(len(n_id), MEMORY_DIM), device=device), \
+        z, last_update = torch.zeros(size=(len(n_id), args.memory_dim), device=device), \
                          torch.zeros(size=(len(n_id),), device=device)
 
     emb = None
 
-    if MODE == "jodie":
+    if args.mode == "jodie":
 
         time_diff = t.repeat(ratio) - last_update[:num_focused_node]
-        if ratio == 2 + NUM_NEG_SAMPLE:
+        if ratio == 2 + args.num_neg_sample:
             # negative samples are sampled for dst only
             # for pos src
             time_diff[:num_src] = (time_diff[:num_src] - statistics.mean_time_shift_src) / statistics.std_time_shift_src
             # for pos dst and neg dst
             time_diff[num_src:] = (time_diff[num_src:] - statistics.mean_time_shift_dst) / statistics.std_time_shift_dst
-        elif ratio == 2 + 2 * NUM_NEG_SAMPLE:
+        elif ratio == 2 + 2 * args.num_neg_sample:
             # negative samples are sampled for both src and dst
             time_diff[:num_src] = (time_diff[:num_src] - statistics.mean_time_shift_src) / statistics.std_time_shift_src
             time_diff[num_src:num_pos] =\
@@ -329,15 +279,15 @@ def get_temporal_embedding(gnn, memory, neighbor_finder, src, dst, neg_dst, t, f
         z = z[:num_focused_node]
         z = gnn(z, time_diff)
 
-    elif MODE == "tgat" or (MODE == "tgn" and USE_EMBEDDING):
+    elif args.mode == "tgat" or (args.mode == "tgn" and args.use_embedding):
         z = gnn(z, edge_index, t.repeat(ratio)[root_id_in_batch] - full_t[e_id], full_msg[e_id])
 
-    elif MODE == "dyrep":
+    elif args.mode == "dyrep":
         emb = gnn(z, edge_index, t.repeat(ratio)[root_id_in_batch] - full_t[e_id], full_msg[e_id])
 
     z_pos_src, z_pos_dst = z[:num_src], z[num_src:num_pos]
     # neg_src is in fact equal to pos_src
-    z_neg_src, z_neg_dst = z[:num_src].repeat_interleave(NUM_NEG_SAMPLE, dim=0), z[num_pos:neg_split]
+    z_neg_src, z_neg_dst = z[:num_src].repeat_interleave(args.num_neg_sample, dim=0), z[num_pos:neg_split]
 
     return emb, last_update, z_pos_src, z_neg_src, z_pos_dst, z_neg_dst
 
@@ -351,14 +301,14 @@ def get_map_tensor(n_id_unique):
     return n_id_old2new
 
 
-def get_distance_encoding(gnn, memory, neighbor_finder, src, dst, neg_dst, t, full_t, full_msg):
-    z_src, z_dst = distance_encoding(src.repeat(NUM_NEG_SAMPLE + 1), torch.cat([dst, neg_dst]),
-                                     t.repeat(NUM_NEG_SAMPLE + 1), neighbor_finder,
-                                     n_neighbors=NEIGHBOR_SIZE,
-                                     USE_MEMORY_EMBEDDING=USE_MEMORY_EMBEDDING,
-                                     DE_SHORTEST_PATH=DE_SHORTEST_PATH,
-                                     DE_RANDOM_WALK=DE_RANDOM_WALK,
-                                     NODE_FEATURE_DIM=MEMORY_DIM, full_t=full_t, full_msg=full_msg,
+def get_distance_encoding(args, gnn, memory, neighbor_finder, src, dst, neg_dst, t, full_t, full_msg):
+    z_src, z_dst = distance_encoding(src.repeat(args.num_neg_sample + 1), torch.cat([dst, neg_dst]),
+                                     t.repeat(args.num_neg_sample + 1), neighbor_finder,
+                                     n_neighbors=args.neighbor_size,
+                                     USE_MEMORY_EMBEDDING=args.use_memory_embedding,
+                                     DE_SHORTEST_PATH=args.de_shortest_path,
+                                     DE_RANDOM_WALK=args.de_random_walk,
+                                     NODE_FEATURE_DIM=args.memory_dim, full_t=full_t, full_msg=full_msg,
                                      memory=memory,
                                      gnn=gnn, k=2)
     z_pos_src, z_pos_dst = z_src[:src.size(0)], z_dst[:src.size(0)]
@@ -366,17 +316,17 @@ def get_distance_encoding(gnn, memory, neighbor_finder, src, dst, neg_dst, t, fu
     return z_pos_src, z_neg_src, z_pos_dst, z_neg_dst
 
 
-def do_neg_sampling(src, dst, nodes, dst_nodes):
+def do_neg_sampling(args, src, dst, nodes, dst_nodes):
     # Sample negative destination nodes.
-    if SAMPLE_NEG_DST_STRICTLY:
-        sample_mask = torch.ones(size=(src.size(0) * NUM_NEG_SAMPLE,), device=device).bool()
-        neg_dst = torch.empty(size=(src.size(0) * NUM_NEG_SAMPLE,), device=device, dtype=src.dtype)
+    if args.sample_neg_dst_strictly:
+        sample_mask = torch.ones(size=(src.size(0) * args.num_neg_sample,), device=device).bool()
+        neg_dst = torch.empty(size=(src.size(0) * args.num_neg_sample,), device=device, dtype=src.dtype)
         while sample_mask.any():
             neg_dst_index = torch.randint(0, dst_nodes.size(0), (sample_mask.sum(),),
                                           dtype=torch.long, device=device)
             neg_dst[sample_mask] = dst_nodes[neg_dst_index]
-            sample_mask = torch.logical_or(neg_dst == dst.repeat_interleave(NUM_NEG_SAMPLE),
-                                           neg_dst == src.repeat_interleave(NUM_NEG_SAMPLE))
+            sample_mask = torch.logical_or(neg_dst == dst.repeat_interleave(args.num_neg_sample),
+                                           neg_dst == src.repeat_interleave(args.num_neg_sample))
 
     else:
         neg_dst_index = torch.randint(0, nodes.size(0), (src.size(0),),
@@ -386,14 +336,15 @@ def do_neg_sampling(src, dst, nodes, dst_nodes):
 
 
 @torch.no_grad()
-def test(memory, gnn, link_predictor, inference_data, full_pos_data, full_t, full_msg, full_nodes, full_dst, statistics,
+def test(args, memory, gnn, link_predictor,
+         inference_data, full_pos_data, full_t, full_msg, full_nodes, full_dst, statistics,
          old_mask, nn_mask, nn_one_mask, nn_two_mask, temporal_neg_mask=None):
     neighbor_finder = get_neighbor_finder(full_pos_data)
 
     if temporal_neg_mask is None:
         temporal_neg_mask = np.zeros(old_mask.shape).astype(bool)
 
-    if USE_MEMORY:
+    if args.use_memory:
         memory.eval()
 
     gnn.eval()
@@ -403,17 +354,18 @@ def test(memory, gnn, link_predictor, inference_data, full_pos_data, full_t, ful
 
     # aps, aucs = [], []
     all_pos_out, all_neg_out = [], []
-    for batch in inference_data.seq_batches(batch_size=BATCH_SIZE):
+    for batch in inference_data.seq_batches(batch_size=args.batch_size):
         src, dst, t, cur_e_id = batch.src, batch.dst, batch.t, batch.e_id
 
-        neg_dst = do_neg_sampling(src, dst, full_nodes, full_dst)
+        neg_dst = do_neg_sampling(args, src, dst, full_nodes, full_dst)
 
         dyrep_emb = None
-        if MODE == "distance_encoding":
-            z_pos_src, z_neg_src, z_pos_dst, z_neg_dst = get_distance_encoding(gnn, memory, neighbor_finder,
+        if args.mode == "distance_encoding":
+            z_pos_src, z_neg_src, z_pos_dst, z_neg_dst = get_distance_encoding(args, gnn, memory, neighbor_finder,
                                                                                src, dst, neg_dst, t, full_t, full_msg)
         else:
-            dyrep_emb, last_update, z_pos_src, z_neg_src, z_pos_dst, z_neg_dst = get_temporal_embedding(gnn, memory,
+            dyrep_emb, last_update, z_pos_src, z_neg_src, z_pos_dst, z_neg_dst = get_temporal_embedding(args,
+                                                                                                        gnn, memory,
                                                                                                         neighbor_finder,
                                                                                                         src, dst,
                                                                                                         neg_dst,
@@ -428,8 +380,8 @@ def test(memory, gnn, link_predictor, inference_data, full_pos_data, full_t, ful
         all_pos_out.extend(pos_out)
         all_neg_out.extend(neg_out)
 
-        if USE_MEMORY:
-            update_memory(memory, src, dst, t, cur_e_id, full_msg, dyrep_emb)
+        if args.use_memory:
+            update_memory(args.mode, memory, src, dst, t, cur_e_id, full_msg, dyrep_emb)
 
     all_pos_out = torch.tensor(all_pos_out)
     all_neg_out = torch.tensor(all_neg_out)
@@ -466,14 +418,14 @@ def compute_scores(labels, predictions, mask):
 
 
 @torch.no_grad()
-def test_time_prediction(gnn, memory, abstract_sum, link_predictor,
+def test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
                          inference_data, full_pos_data, full_t,  full_msg, statistics):
-    if not USE_MEMORY:
+    if not args.use_memory:
         raise NotImplementedError("Time prediction depends on node memory")
 
     memory.eval()
     gnn.eval()
-    if RANK_SCORE == "link_pred":
+    if args.rank_score == "link_pred":
         link_predictor.eval()
     else:
         abstract_sum.eval()
@@ -491,16 +443,17 @@ def test_time_prediction(gnn, memory, abstract_sum, link_predictor,
             print("No pos_sample in this batch, continue")
             continue
 
-        if ONLY_PREDICT_LAST_EVENTS_TIME:
+        if args.only_predict_last_events_time:
             src, dst, t, e_id = retrieve_last_events(src, dst, t, e_id)
 
         dyrep_emb = None
-        if MODE == "distance_encoding":
+        if args.mode == "distance_encoding":
 
             z_src, z_dst = distance_encoding(src, dst, t, neighbor_finder,
-                                             n_neighbors=NEIGHBOR_SIZE, USE_MEMORY_EMBEDDING=USE_MEMORY_EMBEDDING,
-                                             DE_SHORTEST_PATH=DE_SHORTEST_PATH, DE_RANDOM_WALK=DE_RANDOM_WALK,
-                                             NODE_FEATURE_DIM=MEMORY_DIM, full_t=full_t, full_msg=full_msg,
+                                             n_neighbors=args.neighbor_size,
+                                             USE_MEMORY_EMBEDDING=args.use_memory_embedding,
+                                             DE_SHORTEST_PATH=args.de_shortest_path, DE_RANDOM_WALK=args.de_random_walk,
+                                             NODE_FEATURE_DIM=args.memory_dim, full_t=full_t, full_msg=full_msg,
                                              memory=memory,
                                              gnn=gnn, k=2)
             _, last_update_src = memory(src)
@@ -511,13 +464,13 @@ def test_time_prediction(gnn, memory, abstract_sum, link_predictor,
             assoc = None
 
         else:
-            n_id, edge_index, edge_id = get_k_hop_temp_neighbors(neighbor_finder, src, dst, t)
+            n_id, edge_index, edge_id = get_k_hop_temp_neighbors(args, neighbor_finder, src, dst, t)
 
             assoc = get_map_tensor(n_id)
 
             z, last_update = memory(n_id)
 
-            dyrep_emb, z_src, z_dst = get_src_and_dst_embeddings(gnn, edge_index, src, dst, t, full_msg,
+            dyrep_emb, z_src, z_dst = get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg,
                                                                  edge_id, z, last_update, statistics, assoc)
 
             last_update_src, last_update_dst = last_update[assoc[src]], last_update[assoc[dst]]
@@ -549,7 +502,7 @@ def test_time_prediction(gnn, memory, abstract_sum, link_predictor,
                                           np.concatenate([all_t_estimated, t_estimated])
 
         msg = full_msg[e_id]
-        if MODE == "dyrep":
+        if args.mode == "dyrep":
             memory.update_state(src, dst, t, msg, src_emb=dyrep_emb[assoc[src]], dst_emb=dyrep_emb[assoc[dst]])
         else:
             memory.update_state(src, dst, t, msg)
@@ -562,10 +515,10 @@ def test_time_prediction(gnn, memory, abstract_sum, link_predictor,
     return mae, rmse, rmsle
 
 
-def get_src_and_dst_embeddings(gnn, edge_index, src, dst, t, full_msg, e_id, z, last_update, statistics, assoc):
+def get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg, e_id, z, last_update, statistics, assoc):
     dyrep_emb = None
 
-    if MODE == "jodie":
+    if args.mode == "jodie":
 
         time_diff_src = t - last_update[assoc[src]]
         time_diff_src = (time_diff_src - statistics.mean_time_shift_src) / statistics.std_time_shift_src
@@ -580,13 +533,13 @@ def get_src_and_dst_embeddings(gnn, edge_index, src, dst, t, full_msg, e_id, z, 
 
     else:
 
-        if MODE == "tgat" or (MODE == "tgn" and USE_EMBEDDING):
+        if args.mode == "tgat" or (args.mode == "tgn" and args.use_embedding):
             z = gnn(z, edge_index, torch.tensor([0]).float().repeat(edge_index.size(1)), full_msg[e_id])
             print(f"z.size(): {z.size()}")
             print(f"assoc[candidates]: {assoc[dst]}")
-        elif MODE == "dyrep":
+        elif args.mode == "dyrep":
             dyrep_emb = gnn(z, edge_index, torch.tensor([0]).float().repeat(edge_index.size(1)), full_msg[e_id])
-        elif MODE == "tgn" and not USE_EMBEDDING:
+        elif args.mode == "tgn" and not args.use_embedding:
             pass
         else:
             raise NotImplementedError
@@ -597,12 +550,12 @@ def get_src_and_dst_embeddings(gnn, edge_index, src, dst, t, full_msg, e_id, z, 
     return dyrep_emb, z_src, z_dst
 
 
-def get_k_hop_temp_neighbors(neighbor_finder, src, dst, t):
+def get_k_hop_temp_neighbors(args, neighbor_finder, src, dst, t):
     n_id = torch.cat([src, dst]).unique()
     edge_index, e_id = None, None
-    if not (not USE_EMBEDDING and MODE == "tgn"):
+    if not (not args.use_embedding and args.mode == "tgn"):
         n_id, edge_index, e_id = \
-            neighbor_finder.get_k_hop_temporal_neighbor_by_one_timestamp(n_id, t[0], n_neighbors=NEIGHBOR_SIZE, k=1)
+            neighbor_finder.get_k_hop_temporal_neighbor_by_one_timestamp(n_id, t[0], args.neighbor_size, k=1)
         n_id, edge_index, e_id = torch.from_numpy(n_id).to(device), \
                                  torch.from_numpy(edge_index).to(device), \
                                  torch.from_numpy(e_id).to(device).long()
@@ -627,7 +580,7 @@ def retrieve_last_events(src, dst, t, cur_e_id):
 
 
 @torch.no_grad()
-def test_temporal_recommendation(gnn, memory, abstract_sum, link_predictor, inference_data,
+def test_temporal_recommendation(args, gnn, memory, abstract_sum, link_predictor, inference_data,
                                  full_pos_data, full_t, full_msg, full_nodes, full_dst, statistics,
                                  old_mask, nn_mask, nn_one_mask, nn_two_mask, temporal_neg_mask=None):
     if temporal_neg_mask is None:
@@ -639,10 +592,10 @@ def test_temporal_recommendation(gnn, memory, abstract_sum, link_predictor, infe
                                                   nn_one_mask[valid_mask], \
                                                   nn_two_mask[valid_mask]
 
-    if USE_MEMORY:
+    if args.use_memory:
         memory.eval()
     gnn.eval()
-    if RANK_SCORE == "link_pred":
+    if args.rank_score == "link_pred":
         link_predictor.eval()
     else:
         abstract_sum.eval()
@@ -661,46 +614,49 @@ def test_temporal_recommendation(gnn, memory, abstract_sum, link_predictor, infe
             continue
 
         candidates, root_nodes, root_ids, recommend_times =\
-            get_candidates(neighbor_finder, src, t, full_nodes, full_dst)
+            get_candidates(args.candidates_from, neighbor_finder, src, t, full_nodes, full_dst)
 
         dyrep_emb, last_update = None, None
-        if MODE == "distance_encoding":  # In this case, it is certain that USE_MEMORY == False
+        if args.mode == "distance_encoding":  # In this case, it is certain that USE_MEMORY == False
 
             n_id = root_nodes
             assoc = get_map_tensor(n_id)
             last_update = torch.zeros(len(n_id), device=device)
 
             z_root, z_candidate = distance_encoding(root_nodes, candidates, recommend_times, neighbor_finder,
-                                                    n_neighbors=NEIGHBOR_SIZE,
-                                                    USE_MEMORY_EMBEDDING=USE_MEMORY_EMBEDDING,
-                                                    DE_SHORTEST_PATH=DE_SHORTEST_PATH, DE_RANDOM_WALK=DE_RANDOM_WALK,
-                                                    NODE_FEATURE_DIM=MEMORY_DIM, full_t=full_t, full_msg=full_msg,
+                                                    n_neighbors=args.neighbor_size,
+                                                    USE_MEMORY_EMBEDDING=args.use_memory_embedding,
+                                                    DE_SHORTEST_PATH=args.de_shortest_path,
+                                                    DE_RANDOM_WALK=args.de_random_walk,
+                                                    NODE_FEATURE_DIM=args.memory_dim,
+                                                    full_t=full_t,
+                                                    full_msg=full_msg,
                                                     memory=memory,
                                                     gnn=gnn, k=2)
 
         else:
-            n_id, edge_index, edge_id = get_k_hop_temp_neighbors(neighbor_finder, src, dst, t)
+            n_id, edge_index, edge_id = get_k_hop_temp_neighbors(args, neighbor_finder, src, dst, t)
             assoc = get_map_tensor(n_id)
 
             if n_id.size(0) == 0:
                 print("n_id.size(0) == 0 in this batch, continue")
                 continue
 
-            if USE_MEMORY:
+            if args.use_memory:
                 z, last_update = memory(n_id)
             else:
-                z, last_update = torch.zeros(len(n_id), MEMORY_DIM, device=device), \
+                z, last_update = torch.zeros(len(n_id), args.memory_dim, device=device), \
                                  torch.zeros(len(n_id), device=device)
 
             dyrep_emb, z_root, z_candidate = \
-                get_src_and_dst_embeddings(gnn, edge_index, src, dst, t, full_msg, edge_id, z, last_update,
+                get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg, edge_id, z, last_update,
                                            statistics, assoc)
 
         last_update_root, last_update_candidate = last_update[assoc[root_nodes]], last_update[assoc[candidates]]
         last_time_max = torch.max(torch.cat((last_update_root, last_update_candidate), dim=-1), dim=-1)[0]
         delta_t = recommend_times - last_time_max
 
-        rank_scores = get_rank_scores(abstract_sum, link_predictor, z_root, z_candidate, delta_t)
+        rank_scores = get_rank_scores(args.rank_score, abstract_sum, link_predictor, z_root, z_candidate, delta_t)
 
         # _, counts = torch.unique_consecutive(recommend_times, return_counts=True)
         # root_nodes_tuple = torch.split(root_nodes, counts.tolist())
@@ -734,9 +690,9 @@ def test_temporal_recommendation(gnn, memory, abstract_sum, link_predictor, infe
             #       f"highest_scored_candidate: {sorted_candidates[0]}")
             # print(rank.shape)
 
-        if USE_MEMORY:
+        if args.use_memory:
             msg = full_msg[e_id]
-            if MODE == "dyrep":
+            if args.mode == "dyrep":
                 # saved_edge_index, saved_e_id, saved_t = edge_index, e_id, t
                 memory.update_state(src, dst, t, msg, src_emb=dyrep_emb[assoc[src]], dst_emb=dyrep_emb[assoc[dst]])
             else:
@@ -761,19 +717,19 @@ def test_temporal_recommendation(gnn, memory, abstract_sum, link_predictor, infe
         nn_two_mar, nn_two_miss_record
 
 
-def get_rank_scores(abstract_sum, link_predictor, z_root, z_candidate, delta_t):
-    if RANK_SCORE == "likelihood":
+def get_rank_scores(arg_rank_score, abstract_sum, link_predictor, z_root, z_candidate, delta_t):
+    if arg_rank_score == "likelihood":
         rank_scores = abstract_sum.likelihood_func(delta_t, z_src=z_root, z_dst=z_candidate)
-    elif RANK_SCORE == "intensity":
+    elif arg_rank_score == "intensity":
         rank_scores = abstract_sum(z_root, z_candidate, delta_t)
-    elif RANK_SCORE == "link_pred":
+    elif arg_rank_score == "link_pred":
         rank_scores = link_predictor(z_root, z_candidate).squeeze()
     else:
         raise NotImplementedError
     return rank_scores
 
 
-def get_candidates(neighbor_finder, src, t, full_nodes, full_dst):
+def get_candidates(arg_candidates_from, neighbor_finder, src, t, full_nodes, full_dst):
     def get_candidates_from(nodes_th):
         len_src, len_nodes = src.size(0), nodes_th.size(0)
         candidates_inner = nodes_th.repeat(len_src)
@@ -787,7 +743,7 @@ def get_candidates(neighbor_finder, src, t, full_nodes, full_dst):
                                                                                     recommend_times_inner[valid_mask]
         return candidates_inner, root_nodes_inner, root_ids_inner, recommend_times_inner
 
-    if CANDIDATES_FROM == "neighbors":
+    if arg_candidates_from == "neighbors":
         candidates, root_nodes, root_ids, recommend_times = \
             neighbor_finder.get_temporal_recommendation_candidates(src.cpu().numpy(), t.cpu().numpy())
 
@@ -795,10 +751,10 @@ def get_candidates(neighbor_finder, src, t, full_nodes, full_dst):
                                                             torch.from_numpy(root_nodes).to(device), \
                                                             torch.from_numpy(root_ids).to(device), \
                                                             torch.from_numpy(recommend_times).to(device)
-    elif CANDIDATES_FROM == "all_dst":
+    elif arg_candidates_from == "all_dst":
         candidates, root_nodes, root_ids, recommend_times = get_candidates_from(full_dst)
 
-    elif CANDIDATES_FROM == "all_nodes":
+    elif arg_candidates_from == "all_nodes":
         candidates, root_nodes, root_ids, recommend_times = get_candidates_from(full_nodes)
     else:
         raise NotImplementedError("CANDIDATES_FROM must be \"neighbors\", \"all_dst\" or \"all_nodes\".")
@@ -812,7 +768,8 @@ def main(args):
     val_old_mask, test_old_mask, nn_val_mask, nn_test_mask, nn_one_val_mask, \
     nn_one_test_mask, nn_two_val_mask, nn_two_test_mask, neg_test_mask, \
     n_total_unique_nodes_real, num_train_events, min_dst_idx, max_dst_idx \
-        = get_data(NAME, use_neg=USE_NEG, use_msg=USE_MSG, dataset_size=DATASET_SIZE, cpu_only=CPU_ONLY, nn_ratio=0)
+        = get_data(args.name, use_neg=args.use_neg, use_msg=args.use_msg, dataset_size=args.dataset_size,
+                   cpu_only=args.cpu_only, nn_ratio=0)
     train_src = torch.unique(train_data.src, sorted=True)
     train_dst = torch.unique(train_data.dst, sorted=True)
     train_nodes = torch.unique(torch.cat([train_src, train_dst]), sorted=True)
@@ -823,45 +780,49 @@ def main(args):
     statistics = compute_time_statistics(full_pos_data.src, full_pos_data.dst, full_pos_data.t)
     print("data prepared")
 
-    if USE_MEMORY:
+    if args.use_memory:
         memory = TGNMemory(
             n_total_unique_nodes_real,
             full_msg.size(-1),
-            MEMORY_DIM,
-            EMBEDDING_DIM,
-            TIME_DIM,
-            message_module=IdentityMessage(full_msg.size(-1), TIME_DIM, MEMORY_DIM, EMBEDDING_DIM, mode=MODE),
+            args.memory_dim,
+            args.embedding_dim,
+            args.time_dim,
+            message_module=IdentityMessage(full_msg.size(-1), args.time_dim, args.memory_dim, args.embedding_dim,
+                                           mode=args.mode),
             aggregator_module=LastAggregator(),
-            mode=MODE
+            mode=args.mode
         ).to(device)
     else:
         memory = None
 
-    arg_dict = {"num_nodes": n_total_unique_nodes_real,
-                "in_channels": MEMORY_DIM if MODE != "distance_encoding" else 5 * DE_SHORTEST_PATH + 4 * DE_RANDOM_WALK,
-                "out_channels": EMBEDDING_DIM,
+    arg_dict = {"args": args,
+                "num_nodes": n_total_unique_nodes_real,
+                "in_channels": args.memory_dim if args.mode != "distance_encoding" else
+                5 * args.de_shortest_path + 4 * args.de_random_walk,
+                "out_channels": args.embedding_dim,
                 "msg_dim": full_msg.size(-1),
-                "time_enc": memory.time_enc if memory is not None else TimeEncoder(out_channels=TIME_DIM, mode=MODE).to(
-                    device),
-                "n_layer": N_LAYER}
-    if MODE == "jodie":
+                "time_enc": memory.time_enc if memory is not None else
+                TimeEncoder(out_channels=args.time_dim, mode=args.mode).to(device),
+                "n_layer": args.n_layer}
+    if args.mode == "jodie":
         gnn = TimeEmbedding(**arg_dict).to(device)
-    elif MODE == "distance_encoding":
+    elif args.mode == "distance_encoding":
         gnn = GraphAttentionEmbedding(**arg_dict).to(device)
     else:
         gnn = GraphAttentionEmbedding(**arg_dict).to(device)
 
-    link_predictor = LinkPredictor(in_channels=EMBEDDING_DIM).to(device)
+    link_predictor = LinkPredictor(in_channels=args.embedding_dim).to(device)
 
-    if not USE_DYREPABSTRACTSUM:
+    if not args.use_dyrepabstractsum:
         # in_channels, num_basis, num_param, mc_num_surv = 1, mc_num_time = 3
-        abstract_sum = AbstractSum(2 * EMBEDDING_DIM, num_basis=NUM_BASIS, mc_num_surv=MC_NUM_SURV,
-                                   mc_num_time=MC_NUM_TIME)
+        abstract_sum = AbstractSum(2 * args.embedding_dim, num_basis=args.num_basis, mc_num_surv=args.mc_num_surv,
+                                   mc_num_time=args.mc_num_time)
     else:
         # in_channels, num_basis, num_param, mc_num_surv = 1, mc_num_time = 3
-        abstract_sum = DyrepAbstractSum(2 * EMBEDDING_DIM, mc_num_surv=MC_NUM_SURV, mc_num_time=MC_NUM_TIME)
+        abstract_sum = DyrepAbstractSum(2 * args.embedding_dim,
+                                        mc_num_surv=args.mc_num_surv, mc_num_time=args.mc_num_time)
 
-    if USE_MEMORY:
+    if args.use_memory:
         memory_parameter_set = set(memory.parameters())
     else:
         memory_parameter_set = set()
@@ -869,7 +830,7 @@ def main(args):
     all_parameters = memory_parameter_set | set(gnn.parameters()) | set(abstract_sum.parameters()) \
                      | set(link_predictor.parameters())
 
-    optimizer = torch.optim.Adam(all_parameters, lr=LEARNING_RATE)
+    optimizer = torch.optim.Adam(all_parameters, lr=args.learning_rate)
     criterion = torch.nn.BCEWithLogitsLoss()
 
     for epoch in range(1, args.num_epoch + 1):
@@ -877,26 +838,26 @@ def main(args):
 
         print(f"start epoch {epoch} ...")
 
-        train_loss = train(gnn, memory, abstract_sum, link_predictor, optimizer, criterion, train_data,
+        train_loss = train(args, gnn, memory, abstract_sum, link_predictor, optimizer, criterion, train_data,
                            full_t, full_msg, train_nodes, train_dst, statistics)
         epoch_train_time = time.time() - start_epoch
 
         print(f"  Epoch: {epoch:02d}, Loss: {train_loss:.4f}")
         print(f"  Train_time: {epoch_train_time:.2f}s")
 
-        if TASK == "time_prediction":
+        if args.task == "time_prediction":
 
-            val_mae, val_rmse, val_rmsle = test_time_prediction(gnn, memory, abstract_sum, link_predictor,
+            val_mae, val_rmse, val_rmsle = test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
                                                                 val_data, full_pos_data, full_t,  full_msg,
                                                                 statistics)
-            test_mae, test_rmse, test_rmsle = test_time_prediction(gnn, memory, abstract_sum, link_predictor,
+            test_mae, test_rmse, test_rmsle = test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
                                                                    test_data, full_pos_data, full_t,  full_msg,
                                                                    statistics)
 
             print(f"Val_MAE: {val_mae:.4f}, Val_RMSE: {val_rmse:.4f}, Val_RMSLE: {val_rmsle:.4f}")
             print(f"Test_MAE: {test_mae:.4f}, Test_RMSE: {test_rmse:.4f}, Test_RMSLE: {test_rmsle:.4f}")
 
-        elif TASK == "temporal_recommendation":
+        elif args.task == "temporal_recommendation":
 
             val_mar, val_miss_record, \
                 val_old_mar, val_old_miss_record, \
@@ -948,14 +909,14 @@ def main(args):
             print_scores("test_nn_two", test_nn_two_mar, test_nn_two_miss_record.sum(),
                          test_nn_two_miss_record.float().mean())
 
-        elif TASK == "link_prediction":
+        elif args.task == "link_prediction":
 
             val_ap, val_auc, val_pos_acc, val_neg_acc, \
                 val_old_ap, val_old_auc, val_old_pos_acc, val_old_neg_acc, \
                 val_nn_ap, val_nn_auc, val_nn_pos_acc, val_nn_neg_acc, \
                 val_nn_one_ap, val_nn_one_auc, val_nn_one_pos_acc, val_nn_one_neg_acc, \
                 val_nn_two_ap, val_nn_two_auc, val_nn_two_pos_acc, val_nn_two_neg_acc, \
-                _ = test(gnn, memory, link_predictor,
+                _ = test(args, gnn, memory, link_predictor,
                          val_data, full_pos_data, full_t, full_msg, full_nodes, full_dst, statistics,
                          val_old_mask, nn_val_mask, nn_one_val_mask, nn_two_val_mask)
 
@@ -964,7 +925,7 @@ def main(args):
                 test_nn_ap, test_nn_auc, test_nn_pos_acc, test_nn_neg_acc, \
                 test_nn_one_ap, test_nn_one_auc, test_nn_one_pos_acc, test_nn_one_neg_acc, \
                 test_nn_two_ap, test_nn_two_auc, test_nn_two_pos_acc, test_nn_two_neg_acc, \
-                test_temporal_neg_acc = test(gnn, memory, link_predictor,
+                test_temporal_neg_acc = test(args, gnn, memory, link_predictor,
                                              test_data, full_pos_data, full_t, full_msg, full_nodes, full_dst,
                                              statistics,
                                              test_old_mask, nn_test_mask, nn_one_test_mask, nn_two_test_mask,
