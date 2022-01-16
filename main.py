@@ -7,83 +7,13 @@ import torch
 from torch.nn import Linear
 from sklearn.metrics import average_precision_score, roc_auc_score, mean_absolute_error, mean_squared_error, \
     mean_squared_log_error
-from torch_geometric.nn import TransformerConv
 from torch_geometric.nn.models.tgn import LastAggregator
-from memory import TGNMemory, IdentityMessage, TimeEncoder
-from data import get_data, get_neighbor_finder, compute_time_statistics
-from abstract_sum import AbstractSum, DyrepAbstractSum
-from distance_encoding import distance_encoding
+from data.data_utils import get_data, get_neighbor_finder, compute_time_statistics
+from models.abstract_sum import AbstractSum, DyrepAbstractSum
+from models.distance_encoding import distance_encoding
 from arg_parser import get_args
-
-
-class TimeEmbedding(torch.nn.Module):
-    def __init__(self, args, num_nodes, in_channels, out_channels, msg_dim, time_enc, n_layer):
-        super(TimeEmbedding, self).__init__()
-
-        self.in_channels = in_channels
-
-        class NormalLinear(torch.nn.Linear):
-            # From Jodie code
-            def reset_parameters(self):
-                stdv = 1. / math.sqrt(self.weight.size(1))
-                self.weight.data.normal_(0, stdv)
-                if self.bias is not None:
-                    self.bias.data.normal_(0, stdv)
-
-        self.embedding_layer = NormalLinear(1, self.in_channels)
-
-    def forward(self, z, time_diffs=None):
-        return z * (1 + self.embedding_layer(time_diffs.float().unsqueeze(1)))
-
-
-class GraphAttentionEmbedding(torch.nn.Module):
-    def __init__(self, args, num_nodes, in_channels, out_channels, msg_dim, time_enc, n_layer):
-        super(GraphAttentionEmbedding, self).__init__()
-        self.num_nodes = num_nodes
-        self.time_enc = time_enc
-        self.edge_dim = 0
-
-        self.args = args
-        # self.time_encoding = args.time_encoding
-        # self.edge_attribute = args.edge_attribute
-
-        if args.time_encoding:
-            self.edge_dim += time_enc.out_channels
-        if args.edge_attribute:
-            self.edge_dim += msg_dim
-
-        self.n_layer = n_layer if n_layer > 0 else 1
-        self.layers = [TransformerConv(in_channels, out_channels // 2, heads=2,
-                                       dropout=0.1, edge_dim=self.edge_dim if self.edge_dim > 0 else None
-                                       ).to(device)]  # lgh: "to(device) is important
-        for _ in range(n_layer - 1):
-            self.layers.append(TransformerConv(out_channels, out_channels // 2, heads=2,
-                                               dropout=0.1, edge_dim=self.edge_dim if self.edge_dim > 0 else None
-                                               ).to(device))  # lgh: "to(device) is important
-
-    def forward(self, x, edge_index, edge_time, msg):
-
-        edge_attr = torch.zeros(edge_index.size(-1), 0).float().to(device)
-        if self.args.time_encoding:
-            # rel_t = self.last_update[edge_index[1]] - t             # lgh: edge_index[0] -> edge_index[1]
-            rel_t_enc = self.time_enc(edge_time.to(x.dtype))
-            edge_attr = torch.cat([edge_attr, rel_t_enc], dim=-1)
-        if self.args.edge_attribute:
-            edge_attr = torch.cat([edge_attr, msg], dim=-1)
-
-        if self.edge_dim > 0:
-            for layer in self.layers:
-                x = layer(x, edge_index, edge_attr)
-        else:
-            for layer in self.layers:
-                x = layer(x, edge_index)
-
-        # self.last_update[edge_index[1]] = t          # lgh: edge_index[0] -> edge_index[1]
-
-        return x
-
-    # def reset_timer(self):
-    #     self.last_update = torch.zeros(self.num_nodes, dtype=torch.long)
+from models.memory import TGNMemory, IdentityMessage, TimeEncoder
+from models import TimeEmbedding, GraphAttentionEmbedding
 
 
 class LinkPredictor(torch.nn.Module):
@@ -803,7 +733,8 @@ def main(args):
                 "msg_dim": full_msg.size(-1),
                 "time_enc": memory.time_enc if memory is not None else
                 TimeEncoder(out_channels=args.time_dim, mode=args.mode).to(device),
-                "n_layer": args.n_layer}
+                "n_layer": args.n_layer,
+                "device": device}
     if args.mode == "jodie":
         gnn = TimeEmbedding(**arg_dict).to(device)
     elif args.mode == "distance_encoding":

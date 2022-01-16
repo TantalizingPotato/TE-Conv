@@ -1,12 +1,11 @@
 import os.path as osp
-from tqdm import tqdm
 import random
 
 import numpy as np
 import pandas as pd
 import torch
 
-from temporal_data import TemporalData
+from data.temporal_data import TemporalData
 from neighbor_finder import NeighborFinder
 
 
@@ -17,17 +16,17 @@ def get_data(name, val_ratio=0.15, test_ratio=0.15, use_neg=True, use_msg=True, 
              cpu_only=False, nn_ratio=0.1):
     device = torch.device('cuda' if torch.cuda.is_available() and not cpu_only else 'cpu')
 
-    path = osp.join(osp.dirname(osp.realpath(__file__)), 'data', name + '.csv')
+    path = osp.join(osp.dirname(osp.realpath(__file__)), '', name + '.csv')
     graph_df = pd.read_csv(path, skiprows=list(range(dataset_size + 1, 157475)))
     graph_df.insert(graph_df.shape[1], 'e_id', np.arange(graph_df.shape[0]))
 
-    path_msg = osp.join(osp.dirname(osp.realpath(__file__)), 'data', name + '_msg.txt')
+    path_msg = osp.join(osp.dirname(osp.realpath(__file__)), '', name + '_msg.txt')
     df_msg = pd.read_csv(path_msg, skiprows=list(range(dataset_size + 1, 157475))) if osp.isfile(
         path_msg) and use_msg else pd.DataFrame([[] for _ in range(graph_df.shape[0])])
     messages = np.append(df_msg.values, np.array([[0]]).repeat(df_msg.shape[1], axis=1), axis=0)
 
     if use_neg:
-        path_neg = osp.join(osp.dirname(osp.realpath(__file__)), 'data', name + '_neg.csv')
+        path_neg = osp.join(osp.dirname(osp.realpath(__file__)), '', name + '_neg.csv')
         neg_df = pd.read_csv(path_neg)
         neg_df.insert(neg_df.shape[1], 'e_id', - np.ones(neg_df.shape[0]))
     else:

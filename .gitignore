@@ -1,2 +1,9 @@
 .idea/
+
+# unused code
 code_bak.py
+models/message.py
+models/multi_hop_neighbor_loader.py
+models/last_neighbor_loader.py
+models/edge_memory.py
+utils/

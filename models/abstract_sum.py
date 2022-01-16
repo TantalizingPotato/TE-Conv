@@ -158,13 +158,16 @@ class AbstractSum(torch.nn.Module):
 
         compensator = mc_int.sum(-1) * delta_t / self.mc_num_surv
 
-        # if torch.isnan(compensator).any(): print(f"def compensator_func: mc_points:{mc_points} mc_int: {mc_int}, delta_t: {delta_t}, self.mc_num_surv: {self.mc_num_surv}")
+        # if torch.isnan(compensator).any():
+        #     print(f"def compensator_func: mc_points:{mc_points} mc_int: {mc_int}, "
+        #           f"delta_t: {delta_t}, self.mc_num_surv: {self.mc_num_surv}")
 
         return compensator
 
     def ll(self, z_src, z_dst, delta_t):
 
-        # if torch.isnan(z_src).any() or torch.isnan(z_dst).any(): print(f"def ll: input z_src: {z_src}, input z_dst: {z_dst}")
+        # if torch.isnan(z_src).any() or torch.isnan(z_dst).any():
+        #     print(f"def ll: input z_src: {z_src}, input z_dst: {z_dst}")
 
         int_vals, params = self.intensity_func(delta_t, z_src=z_src, z_dst=z_dst, return_params=True)
 
@@ -184,7 +187,8 @@ class AbstractSum(torch.nn.Module):
 
         out = int_vals * torch.exp(-compensator)
 
-        # if torch.isnan(out).any(): print(f"def likelihood_func: params: {params} int_vals: {int_vals}, compensator: {compensator}")
+        # if torch.isnan(out).any():
+        #     print(f"def likelihood_func: params: {params} int_vals: {int_vals}, compensator: {compensator}")
 
         return out
 
@@ -192,7 +196,9 @@ class AbstractSum(torch.nn.Module):
         weights = self.weight_layer(torch.cat((z_src, z_dst), dim=-1))
         params = torch.split(weights, self.num_basis, dim=-1)
 
-        # if torch.isnan(params[0]).any(): print(f"def estimate_time: computed params:{params}, weights:{weights}, input z_src:{z_src}, input z_dst: {z_dst}")
+        # if torch.isnan(params[0]).any():
+        #     print(f"def estimate_time: computed params:{params}, weights:{weights},"
+        #           f" input z_src:{z_src}, input z_dst: {z_dst}")
 
         assert z_src.shape == z_dst.shape
 
@@ -211,7 +217,9 @@ class AbstractSum(torch.nn.Module):
 
         mc_time_integral = mc_time_integrand.sum(-1) / self.mc_num_time
 
-        # if torch.isnan(mc_time_integral).any(): print(f"def estimate_time:  {mc_time_integrand}, {mc_time_t}, mc_time_likelihood: {mc_time_likelihood}, {mc_time_points}")
+        # if torch.isnan(mc_time_integral).any():
+        #     print(f"def estimate_time:  {mc_time_integrand}, {mc_time_t}, "
+        #           f"mc_time_likelihood: {mc_time_likelihood}, {mc_time_points}")
 
         return mc_time_integral
 
@@ -245,7 +253,8 @@ class DyrepAbstractSum(torch.nn.Module):
         if params is None:
             # if torch.isnan(z_src).any() or torch.isnan(z_dst).any(): print(
             #     f"def intensity_func: input z_src: {z_src}, input z_dst: {z_dst}")
-            # params = self.weight_layer(torch.cat((z_src, z_dst), dim=-1)).squeeze(-1)  # (batch_size, num_param*num_basis)
+            # params = self.weight_layer(torch.cat((z_src, z_dst), dim=-1)).squeeze(-1)
+            # # (batch_size, num_param*num_basis)
             # params = self.weight_layer_src(z_src).squeeze(-1) + self.weight_layer_dst(z_dst).squeeze(-1)
             h = self.lin_src(z_src) + self.lin_dst(z_dst)
             h = h.relu()
@@ -275,7 +284,8 @@ class DyrepAbstractSum(torch.nn.Module):
         if params is None:
             # if torch.isnan(z_src).any() or torch.isnan(z_dst).any(): print(
             #     f"def compensator_func: input z_src: {z_src}, input z_dst: {z_dst}")
-            # params = self.weight_layer(torch.cat((z_src, z_dst), dim=-1)).squeeze(-1)  # (batch_size, num_param*num_basis)
+            # params = self.weight_layer(torch.cat((z_src, z_dst), dim=-1)).squeeze(-1)
+            # # (batch_size, num_param*num_basis)
             # params = self.weight_layer_src(z_src).squeeze(-1) + self.weight_layer_dst(z_dst).squeeze(-1)
             h = self.lin_src(z_src) + self.lin_dst(z_dst)
             h = h.relu()
@@ -297,13 +307,16 @@ class DyrepAbstractSum(torch.nn.Module):
 
         compensator = mc_int.sum(-1) * delta_t / self.mc_num_surv
 
-        # if torch.isnan(compensator).any(): print(f"def compensator_func: mc_points:{mc_points} mc_int: {mc_int}, delta_t: {delta_t}, self.mc_num_surv: {self.mc_num_surv}")
+        # if torch.isnan(compensator).any():
+        #     print(f"def compensator_func: mc_points:{mc_points} mc_int: {mc_int},"
+        #           f" delta_t: {delta_t}, self.mc_num_surv: {self.mc_num_surv}")
 
         return compensator
 
     def ll(self, z_src, z_dst, delta_t):
 
-        # if torch.isnan(z_src).any() or torch.isnan(z_dst).any(): print(f"def ll: input z_src: {z_src}, input z_dst: {z_dst}")
+        # if torch.isnan(z_src).any() or torch.isnan(z_dst).any():
+        #     print(f"def ll: input z_src: {z_src}, input z_dst: {z_dst}")
 
         int_vals, params = self.intensity_func(delta_t, z_src=z_src, z_dst=z_dst, return_params=True)
 
@@ -323,7 +336,8 @@ class DyrepAbstractSum(torch.nn.Module):
 
         out = int_vals * torch.exp(-compensator)
 
-        # if torch.isnan(out).any(): print(f"def likelihood_func: params: {params} int_vals: {int_vals}, compensator: {compensator}")
+        # if torch.isnan(out).any():
+        #     print(f"def likelihood_func: params: {params} int_vals: {int_vals}, compensator: {compensator}")
 
         return out
 
@@ -333,7 +347,9 @@ class DyrepAbstractSum(torch.nn.Module):
         h = h.relu()
         params = self.lin_final(h).squeeze(-1)
 
-        # if torch.isnan(params[0]).any(): print(f"def estimate_time: computed params:{params}, weights:{weights}, input z_src:{z_src}, input z_dst: {z_dst}")
+        # if torch.isnan(params[0]).any():
+        #     print(f"def estimate_time: computed params:{params}, weights:{weights},"
+        #           f" input z_src:{z_src}, input z_dst: {z_dst}")
 
         assert z_src.shape == z_dst.shape
 
@@ -354,6 +370,8 @@ class DyrepAbstractSum(torch.nn.Module):
         print(f"params:{params}, intensity:{softplus(params)}")
         mc_time_integral = mc_time_integrand.sum(-1) / self.mc_num_time
 
-        # if torch.isnan(mc_time_integral).any(): print(f"def estimate_time:  {mc_time_integrand}, {mc_time_t}, mc_time_likelihood: {mc_time_likelihood}, {mc_time_points}")
+        # if torch.isnan(mc_time_integral).any():
+        #     print(f"def estimate_time:  {mc_time_integrand}, {mc_time_t}, mc_time_likelihood: "
+        #           f"{mc_time_likelihood}, {mc_time_points}")
 
         return mc_time_integral

@@ -1,20 +1,25 @@
-from .node_memory import NodeMemory
+from .memory import TimeEncoder, TGNMemory, IdentityMessage
 from .edge_memory import EdgeMemory
 from .message import LastAggregator, MeanAggregator, EdgeIdentityMessage, IdentityMessage
-from .time_encoder import TimeEncoder
+from .time_embedding import TimeEmbedding
 from .multi_hop_neighbor_loader import MultiHopNeighborLoader
 from .last_neighbor_loader import LastNeighborLoader
-from .edge_link_predictor import EdgeLinkPredictor
+from .link_predictor import LinkPredictor
+from .graph_attention_embedding import GraphAttentionEmbedding
+from .abstract_sum import AbstractSum
 
 __all__ = [
-    'NodeMemory',
+    'TGNMemory',
     'EdgeMemory',
     'LastAggregator',
     'MeanAggregator',
     'LastNeighborLoader',
-    'TimeEncoder',
+    'TimeEmbedding',
+    'GraphAttentionEmbedding',
     'EdgeIdentityMessage',
+    'TimeEncoder',
     'IdentityMessage',
     'MultiHopNeighborLoader',
-    'EdgeLinkPredictor'
+    'LinkPredictor',
+    'AbstractSum'
 ]
