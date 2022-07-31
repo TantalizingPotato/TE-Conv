@@ -43,7 +43,7 @@ def get_args():
                         help="")
     parser.add_argument("--de_shortest_path", type=bool, default=True,
                         help="for distance_encoding only, whether to use shortest_path")
-    parser.add_argument("--de_random_walk = True", type=bool, default=True,
+    parser.add_argument("--de_random_walk", type=bool, default=True,
                         help="for distance encoding only, whether to use random_walk")
     parser.add_argument("--edge_attribute", type=bool, default=False,
                         help="whether to use edge attribute when generating node embedding")
@@ -69,7 +69,7 @@ def get_args():
     parser.add_argument("--mc_num_time", type=int, default=100,
                         help="monte carlo sample number for computing some integral expression in time predictor")
 
-    parser.add_argument("--use_neighbor_finder = True", type=bool, default=True,
+    parser.add_argument("--use_neighbor_finder", type=bool, default=True,
                         help="whether to use neighbor_finder (if set to True) or neighbor_loader (if set to False)")
 
     parser.add_argument("--use_neg", type=bool, default=False,
@@ -87,10 +87,10 @@ def get_args():
     parser.add_argument("--neighbor_size", type=int, default=10,
                         help="the number of a node's neighbors returned by neighbor_finder or neighbor_loader")
 
-    parser.add_argument("--dataset_size = 2000", type=int, default=2000,
+    parser.add_argument("--dataset_size", type=int, default=2000,
                         help="the number of samples to draw from the dataset")
 
-    parser.add_argument("--cpu_only = True", type=bool, default=True,
+    parser.add_argument("--cpu_only", type=bool, default=True,
                         help="whether to run the model only on CPU (to run without GPU)")
 
     parser.add_argument("--candidates_from", type=str, default="all_dst", choices=["all_dst", "all_nodes", "neighbors"],

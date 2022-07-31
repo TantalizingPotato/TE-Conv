@@ -1,5 +1,20 @@
 .idea/
 
+.DS_Store
+
+__pycache__/
+*/__pycache__/
+
+data/fb-forum.csv
+data/ia-contact.csv
+data/ia-contacts_hypertext2009.csv
+data/ia-enron-employees.csv
+data/ia-radoslaw-email.csv
+data/soc-wiki-elec.csv
+data/wikipedia.csv
+data/wikipedia_msg.txt
+data/wikipedia_neg.csv
+
 # unused code
 code_bak.py
 models/message.py

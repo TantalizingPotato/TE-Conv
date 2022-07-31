@@ -226,7 +226,7 @@ def get_temporal_embedding(args, gnn, memory, neighbor_finder, src, dst, neg_dst
 def get_map_tensor(n_id_unique):
     n_id_unique = n_id_unique.unique()
     max_n_id_unique = n_id_unique.max().item()
-    n_id_old2new = torch.empty(max_n_id_unique, dtype=torch.long, device=device)
+    n_id_old2new = torch.empty(max_n_id_unique + 1, dtype=torch.long, device=device)
     n_id_old2new[n_id_unique] = torch.arange(n_id_unique.size(0), device=device)
     return n_id_old2new
 
