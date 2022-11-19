@@ -33,8 +33,8 @@ def tgat_link_predict(z_src, z_dst):
     return (z_src * z_dst).sum(dim=-1, keepdim=True).sigmoid()
 
 
-def train(args, gnn, memory, abstract_sum, link_predictor, optimizer, criterion, train_data,
-          full_t, full_msg, train_nodes, train_dst, statistics):
+def train(args, gnn, memory, abstract_sum, link_predictor, all_parameters, optimizer, criterion, train_data,
+          full_pos_data, full_t, full_msg, train_nodes, train_dst, statistics):
     # set the models to state of training
     if args.use_memory:
         memory.train()
@@ -52,7 +52,10 @@ def train(args, gnn, memory, abstract_sum, link_predictor, optimizer, criterion,
     loss = None
     optimizer.zero_grad()
 
-    for i, batch in tqdm(enumerate(train_data.seq_batches(batch_size=args.batch_size)), total=num_batch):
+    milestone_basis = num_batch // 5
+
+    #     for i, batch in tqdm(enumerate(train_data.seq_batches(batch_size=args.batch_size)), total=num_batch):
+    for i, batch in enumerate(train_data.seq_batches(batch_size=args.batch_size)):
 
         src, dst, t, cur_e_id = batch.src, batch.dst, batch.t, batch.e_id
         valid_mask = cur_e_id != -1
@@ -77,8 +80,40 @@ def train(args, gnn, memory, abstract_sum, link_predictor, optimizer, criterion,
                                                                                                         full_msg,
                                                                                                         statistics)
 
-        loss_cur_batch = compute_loss(args, abstract_sum, link_predictor, criterion,
-                         src, last_update, t, z_neg_dst, z_neg_src, z_pos_dst, z_pos_src)
+        # loss_cur_batch = compute_loss(args, abstract_sum, link_predictor, criterion,
+        #                               src, last_update, t, z_neg_dst, z_neg_src, z_pos_dst, z_pos_src)
+
+        # calculating loss
+        num_src = src.size(0)  # number of pos src
+        num_pos = 2 * num_src  # total number of pos src and pos dst
+        #  1. the last index of neg dst or 2. the split index for neg src and neg dst
+        neg_split = (2 + args.num_neg_sample) * num_src
+        if args.dyrep_loss:
+            last_update_src, last_update_dst = last_update[:num_src], last_update[num_src:num_pos]
+            pos_delta_t = (t - torch.max(last_update_src, last_update_dst)).float()
+
+            # neg_src is in fact equal to pos_src
+            last_update_neg_src, last_update_neg_dst = \
+                last_update_src.repeat_interleave(args.num_neg_sample, dim=0), last_update[num_pos:neg_split]
+
+            delta_t_neg = (t.repeat_interleave(args.num_neg_sample) - torch.max(last_update_neg_src,
+                                                                                last_update_neg_dst)).float()
+            loss_cur_batch = - torch.log(abstract_sum.intensity_func(pos_delta_t, z_pos_src, z_pos_dst,
+                                                                     return_params=False)).sum() / z_pos_src.size(0)
+            loss_cur_batch += args.n_coefficient * \
+                              abstract_sum.intensity_func(delta_t_neg, z_neg_src, z_neg_dst,
+                                                          return_params=False).sum() / z_neg_src.size(0)
+        else:
+            # if args.other_loss == "time_prediction":
+            #     t_true, t_estimated = test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
+            #                                                val_data, full_pos_data, full_t, full_msg,
+            #                                                statistics)
+            #     loss_cur_batch = None
+            # elif args.other_loss == "link_prediction":
+            pos_out = link_predictor(z_pos_src, z_pos_dst)
+            neg_out = link_predictor(z_neg_src, z_neg_dst)
+            loss_cur_batch = criterion(pos_out, torch.ones_like(pos_out))
+            loss_cur_batch += args.n_coefficient * criterion(neg_out, torch.zeros_like(neg_out))
 
         if loss is None:
             loss = loss_cur_batch
@@ -93,12 +128,17 @@ def train(args, gnn, memory, abstract_sum, link_predictor, optimizer, criterion,
             update_memory(args.mode, memory, src, dst, t, cur_e_id, full_msg, dyrep_emb)
 
         if (i + 1) % args.backprop_every_n_batches == 0 or i + 1 == num_batch:
-            loss.backward()  # torch.nn.utils.clip_grad_norm_(all_parameters, max_norm=100, norm_type=2)
+            loss.backward()
+            if args.mode == "jodie":
+                torch.nn.utils.clip_grad_norm_(all_parameters, max_norm=100, norm_type=2)
             optimizer.step()
             loss = 0
             optimizer.zero_grad()
             if args.use_memory:
                 memory.detach()
+
+        if (i + 1) % milestone_basis == 0 or (i + 1) == num_batch:
+            print(f"{100 * (i + 1) / num_batch:.2f}% trained for this epoch ...")
 
     return total_loss / train_data.num_events
 
@@ -119,33 +159,345 @@ def update_memory(arg_mode, memory, src, dst, t, cur_e_id, full_msg, dyrep_emb):
     seen_nodes.extend(torch.cat([valid_src, valid_dst]).unique().tolist())
 
 
-def compute_loss(args, abstract_sum, link_predictor, criterion,
-                 src, last_update, t, z_neg_dst, z_neg_src, z_pos_dst, z_pos_src):
-    num_src = src.size(0)  # number of pos src
-    num_pos = 2 * num_src  # total number of pos src and pos dst
-    #  1. the last index of neg dst or 2. the split index for neg src and neg dst
-    neg_split = (2 + args.num_neg_sample) * num_src
-    if args.dyrep_loss:
-        last_update_src, last_update_dst = last_update[:num_src], last_update[num_src:num_pos]
-        pos_delta_t = (t - torch.max(last_update_src, last_update_dst)).float()
+def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_parameters, optimizer, criterion,
+                          train_data, full_pos_data, full_t, full_msg, train_nodes, train_dst, statistics):
+    if args.batch_size != 1:
+        raise NotImplementedError("Currently, for time prediction, batch size should be one")
 
-        # neg_src is in fact equal to pos_src
-        last_update_neg_src, last_update_neg_dst = \
-            last_update_src.repeat_interleave(args.num_neg_sample, dim=0), last_update[num_pos:neg_split]
+    # set the models to state of training
+    if args.use_memory:
+        memory.train()
+        memory.reset_state()  # Start with a fresh memory.
+    gnn.train()
+    link_predictor.train()
+    abstract_sum.train()
 
-        delta_t_neg = (t.repeat_interleave(args.num_neg_sample) - torch.max(last_update_neg_src,
-                                                                       last_update_neg_dst)).float()
-        loss_cur_batch = - torch.log(abstract_sum.intensity_func(pos_delta_t, z_pos_src, z_pos_dst,
-                                                                 return_params=False)).sum() / z_pos_src.size(0)
-        loss_cur_batch += args.n_coefficient * abstract_sum.intensity_func(delta_t_neg, z_neg_src, z_neg_dst,
-                                                                      return_params=False).sum() / z_neg_src.size(0)
+    neighbor_finder = get_neighbor_finder(train_data)
 
+    total_loss = 0
+
+    loss_function_mse = torch.nn.MSELoss()
+    loss = None
+    optimizer.zero_grad()
+
+    num_batch = math.ceil(train_data.num_events / args.batch_size)
+    milestone_basis = num_batch // 5
+
+    torch.manual_seed(12345)  # Ensure deterministic sampling across epochs.
+
+    neighbor_finder = get_neighbor_finder(full_pos_data)
+
+    # all_t_true, all_t_estimated = np.array([]), np.array([])
+
+    # all_last_update = memory.last_update
+    # print(f"all_last_update: {all_last_update}")
+    # print(f"last_update[100]: {all_last_update[100]}")
+    count_trained_instance = 0
+    for i, batch in enumerate(train_data.seq_batches(batch_size=args.batch_size)):
+        # for batch in inference_data.seq_batches(batch_size=1):
+        src, dst, t, e_id = get_valid_data(batch)
+
+        if src.size(0) == 0:
+            print("No pos_sample in this batch, continue")
+            continue
+
+        if args.only_predict_last_events_time:
+            src, dst, t, e_id = retrieve_last_events(src, dst, t, e_id)
+
+        dyrep_emb = None
+        if args.mode == "distance_encoding":
+
+            z_src, z_dst = distance_encoding(src, dst, t, neighbor_finder,
+                                             n_neighbors=args.neighbor_size,
+                                             USE_MEMORY_EMBEDDING=args.use_memory_embedding,
+                                             DE_SHORTEST_PATH=args.de_shortest_path, DE_RANDOM_WALK=args.de_random_walk,
+                                             NODE_FEATURE_DIM=args.memory_dim, full_t=full_t, full_msg=full_msg,
+                                             memory=memory,
+                                             gnn=gnn, k=2)
+            _, last_update_src = memory(src)
+            _, last_update_dst = memory(dst)
+
+            # lgh: It's safe to set `assoc` to None here,
+            # because the outside will use `assoc` only if `args.mode` == "dyrep"
+            assoc = None
+
+        else:
+            n_id, edge_index, edge_id = get_k_hop_temp_neighbors(args, neighbor_finder, src, dst, t)
+
+            assoc = get_map_tensor(n_id)
+
+            all_last_update = memory.last_update
+            # print(f"all_last_update: {all_last_update}")
+            # print(f"last_update[100]: {all_last_update[100]}")
+            # print(f"all_last_update[n_id]: {all_last_update[n_id]}")
+            z, last_update = memory(n_id)
+
+            dyrep_emb, z_src, z_dst = get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg,
+                                                                 edge_id, z, last_update, statistics, assoc)
+
+            # print(f"last_update: {last_update}")
+            last_update_src, last_update_dst = last_update[assoc[src]], last_update[assoc[dst]]
+
+        # t_true = t - torch.max(torch.cat((last_update_src, last_update_dst), dim=-1), dim=-1)[0]
+        # print(f"t.device: {t.device}")
+        # print(f"last_update_src.device: {last_update_src.device}")
+        # print(f"last_update_dst.device: {last_update_dst.device}")
+        t_true = (t - torch.max(last_update_src, last_update_dst)).float()
+        pos_delta_t = t_true
+        # print(f"torch.max(last_update_src, last_update_dst).device: {torch.max(last_update_src, last_update_dst).device}")
+        # print(f"t_true.device: {t_true.device}")
+        # print(f"pos_delta_t.device: {pos_delta_t.device}")
+
+        # print(f"pos_delta_t: {t_true}")
+        # print(f"t: {t}")
+        # print(f"last_update_src: {last_update_src}")
+        # print(f"last_update_dst: {last_update_dst}")
+
+        # seen_mask = (t_true != t) & (t_true != 0)
+        seen_mask = (t - t_true> 1e-3) & (t_true - 0 > 1e-3)
+        # print(f"t_true: {t_true}")
+        # print(f"t: {t}")
+        # print(f"(t_true - t > 1e-3): {(t_true - t > 1e-3)}")
+        # print(f"(t_true - 0 > 1e-3): {(t_true - 0 > 1e-3)}")
+        # print(f"seen_mask: {seen_mask}")
+        # seen_mask = (last_update_src == last_update_dst) & (t_true != t)
+        seen_z_src, seen_z_pos_dst, seen_t_true, seen_src, seen_pos_dst, seen_e_id \
+            = z_src[seen_mask], z_dst[seen_mask], t_true[seen_mask], \
+              src[seen_mask], dst[seen_mask], e_id[seen_mask]
+
+        if seen_z_src.size(0) == 0:
+            # print(f"t: {t}")
+            # print(f"t_true: {t_true}")
+            # print(f"e_id: {e_id}, src:{src}, dst:{dst}, all nodes unseen in this batch, continue to the next batch")
+            msg = full_msg[e_id]
+            if args.use_memory:
+                if args.mode == "dyrep":
+                    memory.update_state(src, dst, t, msg, src_emb=dyrep_emb[assoc[src]], dst_emb=dyrep_emb[assoc[dst]])
+                else:
+                    memory.update_state(src, dst, t, msg)
+            continue
+
+        # print(f"z_src.device: {z_src.device}")
+        # print(f"z_dst.device: {z_dst.device}")
+
+        t_estimated, abstract_sum_params = abstract_sum.estimate_time(z_src[seen_mask], z_dst[seen_mask],
+                                                                      return_params=True)
+        t_estimated = torch.clamp(
+            t_estimated * 5000,  # t_estimated * 5000
+            max=100000)
+
+        # seen_t_true = seen_t_true.cpu().numpy()
+        # print(f"e_id: {seen_e_id}, src:{seen_src}, dst:{seen_pos_dst}, "
+        #       f"t_estimated: {t_estimated}, t_true: {t_true}")
+        # absolute_error = len(seen_t_true) * mean_absolute_error(seen_t_true, t_estimated)
+        # print(f"absolute_error: {absolute_error}")
+
+        # all_t_true, all_t_estimated = torch.cat([all_t_true, seen_t_true]), \
+        #                               torch.cat([all_t_estimated, t_estimated])
+
+        # # calculating loss
+        # num_src = src.size(0)  # number of pos src
+        # num_pos = 2 * num_src  # total number of pos src and pos dst
+        # #  1. the last index of neg dst or 2. the split index for neg src and neg dst
+        # neg_split = (2 + args.num_neg_sample) * num_src
+
+        # last_update_src, last_update_dst = last_update[:num_src], last_update[num_src:num_pos]
+        # pos_delta_t = (t - torch.max(last_update_src, last_update_dst)).float()
+
+        # # neg_src is in fact equal to pos_src
+        # last_update_neg_src, last_update_neg_dst = \
+        #     last_update_src.repeat_interleave(args.num_neg_sample, dim=0), last_update[num_pos:neg_split]
+        #
+        # delta_t_neg = (t.repeat_interleave(args.num_neg_sample) - torch.max(last_update_neg_src,
+        #                                                                     last_update_neg_dst)).float()
+
+        int_vals = abstract_sum.intensity_func(pos_delta_t, seen_z_src, seen_z_pos_dst, params=abstract_sum_params,
+                                               return_params=False)
+        loss_cur_batch = - torch.log(int_vals).sum() / seen_z_src.size(0)
+        # print(f"pos_delta_t.device: {pos_delta_t.device}")
+        loss_cur_batch += args.n_coefficient * \
+                          abstract_sum.compensator_func(pos_delta_t, seen_z_src, seen_z_pos_dst,
+                                                        params=abstract_sum_params).sum() / seen_z_src.size(0)
+        loss_cur_batch_mse = loss_function_mse(t_estimated, seen_t_true)
+        loss_cur_batch += args.mse_loss_coefficient * loss_cur_batch_mse
+
+        if loss is None:
+            loss = loss_cur_batch
+        else:
+            loss += loss_cur_batch
+        if torch.isnan(loss).any() or torch.isinf(loss).any():  # print(f"{i}, loss: {loss}")
+            print(f"loss: {loss}")
+
+        total_loss += float(loss_cur_batch) * batch.num_events
+
+        count_trained_instance += 1
+
+        msg = full_msg[e_id]
+        if args.use_memory:
+            if args.mode == "dyrep":
+                memory.update_state(src, dst, t, msg, src_emb=dyrep_emb[assoc[src]], dst_emb=dyrep_emb[assoc[dst]])
+            else:
+                memory.update_state(src, dst, t, msg)
+
+        if (i + 1) % args.backprop_every_n_batches == 0 or i + 1 == num_batch:
+            loss.backward()
+            if args.mode == "jodie":
+                torch.nn.utils.clip_grad_norm_(all_parameters, max_norm=100, norm_type=2)
+            optimizer.step()
+            loss = 0
+            optimizer.zero_grad()
+            if args.use_memory:
+                memory.detach()
+
+        if (i + 1) % milestone_basis == 0 or (i + 1) == num_batch:
+            print(f"{100 * (i + 1) / num_batch:.2f}% trained for this epoch ...")
+
+    print(f"count_trained_instance: {count_trained_instance}")
+    return total_loss / count_trained_instance
+
+
+@torch.no_grad()
+def test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
+                         inference_data, full_pos_data, full_t, full_msg, statistics):
+    # if not args.use_memory:
+    #     raise NotImplementedError("Time prediction depends on node memory")
+
+    memory.eval()
+    gnn.eval()
+    if args.rank_score == "link_pred":
+        link_predictor.eval()
     else:
-        pos_out = link_predictor(z_pos_src, z_pos_dst)
-        neg_out = link_predictor(z_neg_src, z_neg_dst)
-        loss_cur_batch = criterion(pos_out, torch.ones_like(pos_out))
-        loss_cur_batch += args.n_coefficient * criterion(neg_out, torch.zeros_like(neg_out))
-    return loss_cur_batch
+        abstract_sum.eval()
+
+    torch.manual_seed(12345)  # Ensure deterministic sampling across epochs.
+
+    neighbor_finder = get_neighbor_finder(full_pos_data)
+
+    all_t_true = torch.tensor([], dtype=torch.float).to(device)
+    all_t_estimated = torch.tensor([], dtype=torch.float).to(device)
+
+    for batch in inference_data.seq_batches(batch_size=1):
+        src, dst, t, e_id = get_valid_data(batch)
+
+        if src.size(0) == 0:
+            print("No pos_sample in this batch, continue")
+            continue
+
+        if args.only_predict_last_events_time:
+            src, dst, t, e_id = retrieve_last_events(src, dst, t, e_id)
+
+        dyrep_emb = None
+        if args.mode == "distance_encoding":
+
+            z_src, z_dst = distance_encoding(src, dst, t, neighbor_finder,
+                                             n_neighbors=args.neighbor_size,
+                                             USE_MEMORY_EMBEDDING=args.use_memory_embedding,
+                                             DE_SHORTEST_PATH=args.de_shortest_path, DE_RANDOM_WALK=args.de_random_walk,
+                                             NODE_FEATURE_DIM=args.memory_dim, full_t=full_t, full_msg=full_msg,
+                                             memory=memory,
+                                             gnn=gnn, k=2)
+            _, last_update_src = memory(src)
+            _, last_update_dst = memory(dst)
+
+            # lgh: It's safe to set `assoc` to None here,
+            # because the outside will use `assoc` only if `args.mode` == "dyrep"
+            assoc = None
+
+        else:
+            n_id, edge_index, edge_id = get_k_hop_temp_neighbors(args, neighbor_finder, src, dst, t)
+
+            assoc = get_map_tensor(n_id)
+
+            z, last_update = memory(n_id)
+
+            dyrep_emb, z_src, z_dst = get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg,
+                                                                 edge_id, z, last_update, statistics, assoc)
+
+            last_update_src, last_update_dst = last_update[assoc[src]], last_update[assoc[dst]]
+
+        t_true = t - torch.max(torch.cat((last_update_src, last_update_dst), dim=-1), dim=-1)[0]
+
+        # seen_mask = (t_true != t) & (t_true != 0)
+        seen_mask = (t - t_true > 1e-3) & (t_true - 0 > 1e-3)
+        # seen_mask = (last_update_src == last_update_dst) & (t_true != t)
+        seen_z_src, seen_z_pos_dst, seen_t_true, seen_src, seen_pos_dst, seen_e_id \
+            = z_src[seen_mask], z_dst[seen_mask], t_true[seen_mask], \
+              src[seen_mask], dst[seen_mask], e_id[seen_mask]
+
+        if seen_z_src.size(0) == 0:
+            # print(f"e_id: {e_id}, src:{src}, dst:{dst}, all nodes unseen in this batch, continue to the next batch")
+            pass
+        else:
+            t_estimated = torch.clamp(
+                abstract_sum.estimate_time(z_src[seen_mask], z_dst[seen_mask]) * 5000,
+                max=100000)
+            # t_estimated = np.clip(
+            #     abstract_sum.estimate_time(z_src[seen_mask], z_dst[seen_mask]).cpu().numpy() * 5000,
+            #     -np.inf,
+            #     100000)
+
+            # seen_t_true = seen_t_true.cpu().numpy()
+            # print(f"e_id: {seen_e_id}, src:{seen_src}, dst:{seen_pos_dst}, "
+            #       f"t_estimated: {t_estimated}, t_true: {t_true}")
+            # absolute_error = len(seen_t_true) * mean_absolute_error(seen_t_true, t_estimated)
+            # print(f"absolute_error: {absolute_error}")
+
+            # print(f"all_t_true.device: {all_t_true.device}")
+            # print(f"seen_t_true.device: {seen_t_true.device}")
+            all_t_true, all_t_estimated = torch.cat([all_t_true, seen_t_true]), \
+                                          torch.cat([all_t_estimated, t_estimated])
+
+            # all_t_true, all_t_estimated = np.concatenate([all_t_true, seen_t_true]), \
+            #                               np.concatenate([all_t_estimated, t_estimated])
+
+        msg = full_msg[e_id]
+        if args.use_memory:
+            if args.mode == "dyrep":
+                memory.update_state(src, dst, t, msg, src_emb=dyrep_emb[assoc[src]], dst_emb=dyrep_emb[assoc[dst]])
+            else:
+                memory.update_state(src, dst, t, msg)
+
+    # # all_t_estimated = np.clip(5000 * all_t_estimated, -np.inf, 100000)
+    all_t_true, all_t_estimated = all_t_true.cpu().numpy(), all_t_estimated.cpu().numpy()
+    mae = float(mean_absolute_error(all_t_true, all_t_estimated))
+    rmse = float(np.sqrt(mean_squared_error(all_t_true, all_t_estimated)))
+    rmsle = float(np.sqrt(mean_squared_log_error(all_t_true, all_t_estimated)))
+
+    return mae, rmse, rmsle
+    # return all_t_true, all_t_estimated
+
+
+# def compute_loss(args, abstract_sum, link_predictor, criterion,
+#                  src, last_update, t, z_neg_dst, z_neg_src, z_pos_dst, z_pos_src):
+#     num_src = src.size(0)  # number of pos src
+#     num_pos = 2 * num_src  # total number of pos src and pos dst
+#     #  1. the last index of neg dst or 2. the split index for neg src and neg dst
+#     neg_split = (2 + args.num_neg_sample) * num_src
+#     if args.dyrep_loss:
+#         last_update_src, last_update_dst = last_update[:num_src], last_update[num_src:num_pos]
+#         pos_delta_t = (t - torch.max(last_update_src, last_update_dst)).float()
+#
+#         # neg_src is in fact equal to pos_src
+#         last_update_neg_src, last_update_neg_dst = \
+#             last_update_src.repeat_interleave(args.num_neg_sample, dim=0), last_update[num_pos:neg_split]
+#
+#         delta_t_neg = (t.repeat_interleave(args.num_neg_sample) - torch.max(last_update_neg_src,
+#                                                                        last_update_neg_dst)).float()
+#         loss_cur_batch = - torch.log(abstract_sum.intensity_func(pos_delta_t, z_pos_src, z_pos_dst,
+#                                                                  return_params=False)).sum() / z_pos_src.size(0)
+#         loss_cur_batch += args.n_coefficient * abstract_sum.intensity_func(delta_t_neg, z_neg_src, z_neg_dst,
+#                                                                       return_params=False).sum() / z_neg_src.size(0)
+#     else:
+#         if args.other_loss == "time_prediction":
+#             t_true, t_estimated = do_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
+#                                                               val_data, full_pos_data, full_t, full_msg,
+#                                                               statistics)
+#         elif args.other_loss == "link_prediction":
+#             pos_out = link_predictor(z_pos_src, z_pos_dst)
+#             neg_out = link_predictor(z_neg_src, z_neg_dst)
+#             loss_cur_batch = criterion(pos_out, torch.ones_like(pos_out))
+#             loss_cur_batch += args.n_coefficient * criterion(neg_out, torch.zeros_like(neg_out))
+#     return loss_cur_batch
 
 
 def get_temporal_embedding(args, gnn, memory, neighbor_finder, src, dst, neg_dst, t, full_t, full_msg, statistics):
@@ -196,7 +548,7 @@ def get_temporal_embedding(args, gnn, memory, neighbor_finder, src, dst, neg_dst
         elif ratio == 2 + 2 * args.num_neg_sample:
             # negative samples are sampled for both src and dst
             time_diff[:num_src] = (time_diff[:num_src] - statistics.mean_time_shift_src) / statistics.std_time_shift_src
-            time_diff[num_src:num_pos] =\
+            time_diff[num_src:num_pos] = \
                 (time_diff[num_src:num_pos] - statistics.mean_time_shift_dst) / statistics.std_time_shift_dst
             # for neg src
             time_diff[num_pos:neg_split] = \
@@ -347,102 +699,101 @@ def compute_scores(labels, predictions, mask):
     return ap, auc, pos_acc, neg_acc
 
 
-@torch.no_grad()
-def test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
-                         inference_data, full_pos_data, full_t,  full_msg, statistics):
-    if not args.use_memory:
-        raise NotImplementedError("Time prediction depends on node memory")
-
-    memory.eval()
-    gnn.eval()
-    if args.rank_score == "link_pred":
-        link_predictor.eval()
-    else:
-        abstract_sum.eval()
-
-    torch.manual_seed(12345)  # Ensure deterministic sampling across epochs.
-
-    neighbor_finder = get_neighbor_finder(full_pos_data)
-
-    all_t_true, all_t_estimated = np.array([]), np.array([])
-
-    for batch in inference_data.seq_batches(batch_size=1):
-        src, dst, t, e_id = get_valid_data(batch)
-
-        if src.size(0) == 0:
-            print("No pos_sample in this batch, continue")
-            continue
-
-        if args.only_predict_last_events_time:
-            src, dst, t, e_id = retrieve_last_events(src, dst, t, e_id)
-
-        dyrep_emb = None
-        if args.mode == "distance_encoding":
-
-            z_src, z_dst = distance_encoding(src, dst, t, neighbor_finder,
-                                             n_neighbors=args.neighbor_size,
-                                             USE_MEMORY_EMBEDDING=args.use_memory_embedding,
-                                             DE_SHORTEST_PATH=args.de_shortest_path, DE_RANDOM_WALK=args.de_random_walk,
-                                             NODE_FEATURE_DIM=args.memory_dim, full_t=full_t, full_msg=full_msg,
-                                             memory=memory,
-                                             gnn=gnn, k=2)
-            _, last_update_src = memory(src)
-            _, last_update_dst = memory(dst)
-
-            # lgh: It's safe to set `assoc` to None here,
-            # because the outside will use `assoc` only if `args.mode` == "dyrep"
-            assoc = None
-
-        else:
-            n_id, edge_index, edge_id = get_k_hop_temp_neighbors(args, neighbor_finder, src, dst, t)
-
-            assoc = get_map_tensor(n_id)
-
-            z, last_update = memory(n_id)
-
-            dyrep_emb, z_src, z_dst = get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg,
-                                                                 edge_id, z, last_update, statistics, assoc)
-
-            last_update_src, last_update_dst = last_update[assoc[src]], last_update[assoc[dst]]
-
-        t_true = t - torch.max(torch.cat((last_update_src, last_update_dst), dim=-1), dim=-1)[0]
-
-        seen_mask = t_true != t
-        seen_z_src, seen_z_pos_dst, seen_t_true, seen_src, seen_pos_dst, seen_e_id \
-            = z_src[seen_mask], z_dst[seen_mask], t_true[seen_mask], \
-              src[seen_mask], dst[seen_mask], e_id[seen_mask]
-
-        if seen_z_src.size(0) == 0:
-            print(f"e_id: {e_id}, src:{src}, dst:{dst}")
-            print("all nodes unseen in this batch, continue to the next batch")
-            pass
-        else:
-            t_estimated = np.clip(
-                abstract_sum.estimate_time(z_src[seen_mask], z_dst[seen_mask]).cpu().numpy() * 5000,
-                -np.inf,
-                100000)
-
-            seen_t_true = seen_t_true.cpu().numpy()
-            print(f"e_id: {seen_e_id}, src:{seen_src}, dst:{seen_pos_dst}, "
-                  f"t_estimated: {t_estimated}, t_true: {t_true}")
-            absolute_error = len(seen_t_true) * mean_absolute_error(seen_t_true, t_estimated)
-            print(f"absolute_error: {absolute_error}")
-
-            all_t_true, all_t_estimated = np.concatenate([all_t_true, seen_t_true]), \
-                                          np.concatenate([all_t_estimated, t_estimated])
-
-        msg = full_msg[e_id]
-        if args.mode == "dyrep":
-            memory.update_state(src, dst, t, msg, src_emb=dyrep_emb[assoc[src]], dst_emb=dyrep_emb[assoc[dst]])
-        else:
-            memory.update_state(src, dst, t, msg)
-
-    # all_t_estimated = np.clip(5000 * all_t_estimated, -np.inf, 100000)
-    mae = float(mean_absolute_error(all_t_true, all_t_estimated))
-    rmse = float(np.sqrt(mean_squared_error(all_t_true, all_t_estimated)))
-    rmsle = float(np.sqrt(mean_squared_log_error(all_t_true, all_t_estimated)))
-
-    return mae, rmse, rmsle
+# @torch.no_grad()
+# def test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
+#                          inference_data, full_pos_data, full_t,  full_msg, statistics):
+#     if not args.use_memory:
+#         raise NotImplementedError("Time prediction depends on node memory")
+#
+#     memory.eval()
+#     gnn.eval()
+#     if args.rank_score == "link_pred":
+#         link_predictor.eval()
+#     else:
+#         abstract_sum.eval()
+#
+#     torch.manual_seed(12345)  # Ensure deterministic sampling across epochs.
+#
+#     neighbor_finder = get_neighbor_finder(full_pos_data)
+#
+#     all_t_true, all_t_estimated = np.array([]), np.array([])
+#
+#     for batch in inference_data.seq_batches(batch_size=1):
+#         src, dst, t, e_id = get_valid_data(batch)
+#
+#         if src.size(0) == 0:
+#             print("No pos_sample in this batch, continue")
+#             continue
+#
+#         if args.only_predict_last_events_time:
+#             src, dst, t, e_id = retrieve_last_events(src, dst, t, e_id)
+#
+#         dyrep_emb = None
+#         if args.mode == "distance_encoding":
+#
+#             z_src, z_dst = distance_encoding(src, dst, t, neighbor_finder,
+#                                              n_neighbors=args.neighbor_size,
+#                                              USE_MEMORY_EMBEDDING=args.use_memory_embedding,
+#                                              DE_SHORTEST_PATH=args.de_shortest_path, DE_RANDOM_WALK=args.de_random_walk,
+#                                              NODE_FEATURE_DIM=args.memory_dim, full_t=full_t, full_msg=full_msg,
+#                                              memory=memory,
+#                                              gnn=gnn, k=2)
+#             _, last_update_src = memory(src)
+#             _, last_update_dst = memory(dst)
+#
+#             # lgh: It's safe to set `assoc` to None here,
+#             # because the outside will use `assoc` only if `args.mode` == "dyrep"
+#             assoc = None
+#
+#         else:
+#             n_id, edge_index, edge_id = get_k_hop_temp_neighbors(args, neighbor_finder, src, dst, t)
+#
+#             assoc = get_map_tensor(n_id)
+#
+#             z, last_update = memory(n_id)
+#
+#             dyrep_emb, z_src, z_dst = get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg,
+#                                                                  edge_id, z, last_update, statistics, assoc)
+#
+#             last_update_src, last_update_dst = last_update[assoc[src]], last_update[assoc[dst]]
+#
+#         t_true = t - torch.max(torch.cat((last_update_src, last_update_dst), dim=-1), dim=-1)[0]
+#
+#         seen_mask = t_true != t
+#         seen_z_src, seen_z_pos_dst, seen_t_true, seen_src, seen_pos_dst, seen_e_id \
+#             = z_src[seen_mask], z_dst[seen_mask], t_true[seen_mask], \
+#               src[seen_mask], dst[seen_mask], e_id[seen_mask]
+#
+#         if seen_z_src.size(0) == 0:
+#             print(f"e_id: {e_id}, src:{src}, dst:{dst}, all nodes unseen in this batch, continue to the next batch")
+#             pass
+#         else:
+#             t_estimated = np.clip(
+#                 abstract_sum.estimate_time(z_src[seen_mask], z_dst[seen_mask]).cpu().numpy() * 5000,
+#                 -np.inf,
+#                 100000)
+#
+#             seen_t_true = seen_t_true.cpu().numpy()
+#             # print(f"e_id: {seen_e_id}, src:{seen_src}, dst:{seen_pos_dst}, "
+#             #       f"t_estimated: {t_estimated}, t_true: {t_true}")
+#             absolute_error = len(seen_t_true) * mean_absolute_error(seen_t_true, t_estimated)
+#             # print(f"absolute_error: {absolute_error}")
+#
+#             all_t_true, all_t_estimated = np.concatenate([all_t_true, seen_t_true]), \
+#                                           np.concatenate([all_t_estimated, t_estimated])
+#
+#         msg = full_msg[e_id]
+#         if args.mode == "dyrep":
+#             memory.update_state(src, dst, t, msg, src_emb=dyrep_emb[assoc[src]], dst_emb=dyrep_emb[assoc[dst]])
+#         else:
+#             memory.update_state(src, dst, t, msg)
+#
+#     # all_t_estimated = np.clip(5000 * all_t_estimated, -np.inf, 100000)
+#     mae = float(mean_absolute_error(all_t_true, all_t_estimated))
+#     rmse = float(np.sqrt(mean_squared_error(all_t_true, all_t_estimated)))
+#     rmsle = float(np.sqrt(mean_squared_log_error(all_t_true, all_t_estimated)))
+#
+#     return mae, rmse, rmsle
 
 
 def get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg, e_id, z, last_update, statistics, assoc):
@@ -464,11 +815,11 @@ def get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg, e_i
     else:
 
         if args.mode == "tgat" or (args.mode == "tgn" and args.use_embedding):
-            z = gnn(z, edge_index, torch.tensor([0]).float().repeat(edge_index.size(1)), full_msg[e_id])
-            print(f"z.size(): {z.size()}")
-            print(f"assoc[candidates]: {assoc[dst]}")
+            z = gnn(z, edge_index, torch.tensor([0]).float().repeat(edge_index.size(1)).to(device), full_msg[e_id])
+            # print(f"z.size(): {z.size()}")
+            # print(f"assoc[candidates]: {assoc[dst]}")
         elif args.mode == "dyrep":
-            dyrep_emb = gnn(z, edge_index, torch.tensor([0]).float().repeat(edge_index.size(1)), full_msg[e_id])
+            dyrep_emb = gnn(z, edge_index, torch.tensor([0]).float().repeat(edge_index.size(1)).to(device), full_msg[e_id])
         elif args.mode == "tgn" and not args.use_embedding:
             pass
         else:
@@ -543,7 +894,7 @@ def test_temporal_recommendation(args, gnn, memory, abstract_sum, link_predictor
             print("No pos_sample in this batch, continue")
             continue
 
-        candidates, root_nodes, root_ids, recommend_times =\
+        candidates, root_nodes, root_ids, recommend_times = \
             get_candidates(args.candidates_from, neighbor_finder, src, t, full_nodes, full_dst)
 
         dyrep_emb, last_update = None, None
@@ -641,10 +992,10 @@ def test_temporal_recommendation(args, gnn, memory, abstract_sum, link_predictor
     nn_two_mar, nn_two_miss_record = rank_list_torch[nn_two_mask].mean(), miss_record[nn_two_mask]
 
     return mar, miss_record, \
-        old_mar, old_miss_record, \
-        nn_mar, nn_miss_record, \
-        nn_one_mar, nn_one_miss_record, \
-        nn_two_mar, nn_two_miss_record
+           old_mar, old_miss_record, \
+           nn_mar, nn_miss_record, \
+           nn_one_mar, nn_one_miss_record, \
+           nn_two_mar, nn_two_miss_record
 
 
 def get_rank_scores(arg_rank_score, abstract_sum, link_predictor, z_root, z_candidate, delta_t):
@@ -746,12 +1097,14 @@ def main(args):
 
     if not args.use_dyrepabstractsum:
         # in_channels, num_basis, num_param, mc_num_surv = 1, mc_num_time = 3
-        abstract_sum = AbstractSum(2 * args.embedding_dim, num_basis=args.num_basis, mc_num_surv=args.mc_num_surv,
-                                   mc_num_time=args.mc_num_time)
+        abstract_sum = AbstractSum(2 * args.embedding_dim, num_basis=args.num_basis, basis=args.basis,
+                                   mc_num_surv=args.mc_num_surv, mc_num_time=args.mc_num_time,
+                                   device=device)
     else:
         # in_channels, num_basis, num_param, mc_num_surv = 1, mc_num_time = 3
         abstract_sum = DyrepAbstractSum(2 * args.embedding_dim,
-                                        mc_num_surv=args.mc_num_surv, mc_num_time=args.mc_num_time)
+                                        mc_num_surv=args.mc_num_surv, mc_num_time=args.mc_num_time,
+                                        device=device)
 
     if args.use_memory:
         memory_parameter_set = set(memory.parameters())
@@ -762,27 +1115,34 @@ def main(args):
                      | set(link_predictor.parameters())
 
     optimizer = torch.optim.Adam(all_parameters, lr=args.learning_rate)
-    criterion = torch.nn.BCEWithLogitsLoss()
+    # criterion = torch.nn.BCEWithLogitsLoss()
+    criterion = torch.nn.BCELoss()
 
     for epoch in range(1, args.num_epoch + 1):
         start_epoch = time.time()
 
         print(f"start epoch {epoch} ...")
 
-        train_loss = train(args, gnn, memory, abstract_sum, link_predictor, optimizer, criterion, train_data,
-                           full_t, full_msg, train_nodes, train_dst, statistics)
-        epoch_train_time = time.time() - start_epoch
+        if args.task == "time_prediction":
+            train_loss = train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_parameters,
+                                               optimizer, criterion, train_data, full_pos_data, full_t, full_msg,
+                                               train_nodes, train_dst, statistics)
+        else:
+            train_loss = train(args, gnn, memory, abstract_sum, link_predictor, all_parameters, optimizer, criterion,
+                           train_data, full_pos_data, full_t, full_msg, train_nodes, train_dst, statistics)
 
+        epoch_train_time = time.time() - start_epoch
         print(f"  Epoch: {epoch:02d}, Loss: {train_loss:.4f}")
         print(f"  Train_time: {epoch_train_time:.2f}s")
 
         if args.task == "time_prediction":
 
             val_mae, val_rmse, val_rmsle = test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
-                                                                val_data, full_pos_data, full_t,  full_msg,
+                                                                val_data, full_pos_data, full_t, full_msg,
                                                                 statistics)
+
             test_mae, test_rmse, test_rmsle = test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
-                                                                   test_data, full_pos_data, full_t,  full_msg,
+                                                                   test_data, full_pos_data, full_t, full_msg,
                                                                    statistics)
 
             print(f"Val_MAE: {val_mae:.4f}, Val_RMSE: {val_rmse:.4f}, Val_RMSLE: {val_rmsle:.4f}")
@@ -791,35 +1151,35 @@ def main(args):
         elif args.task == "temporal_recommendation":
 
             val_mar, val_miss_record, \
-                val_old_mar, val_old_miss_record, \
-                val_nn_mar, val_nn_miss_record, \
-                val_nn_one_mar, val_nn_one_miss_record, \
-                val_nn_two_mar, val_nn_two_miss_record = test_temporal_recommendation(gnn, memory,
-                                                                                      abstract_sum, link_predictor,
-                                                                                      val_data,
-                                                                                      full_pos_data, full_t, full_msg,
-                                                                                      full_nodes, full_dst,
-                                                                                      statistics,
-                                                                                      val_old_mask,
-                                                                                      nn_val_mask,
-                                                                                      nn_one_val_mask,
-                                                                                      nn_two_val_mask)
+            val_old_mar, val_old_miss_record, \
+            val_nn_mar, val_nn_miss_record, \
+            val_nn_one_mar, val_nn_one_miss_record, \
+            val_nn_two_mar, val_nn_two_miss_record = test_temporal_recommendation(gnn, memory,
+                                                                                  abstract_sum, link_predictor,
+                                                                                  val_data,
+                                                                                  full_pos_data, full_t, full_msg,
+                                                                                  full_nodes, full_dst,
+                                                                                  statistics,
+                                                                                  val_old_mask,
+                                                                                  nn_val_mask,
+                                                                                  nn_one_val_mask,
+                                                                                  nn_two_val_mask)
 
             test_mar, test_miss_record, \
-                test_old_mar, test_old_miss_record, \
-                test_nn_mar, test_nn_miss_record, \
-                test_nn_one_mar, test_nn_one_miss_record, \
-                test_nn_two_mar, test_nn_two_miss_record = test_temporal_recommendation(gnn, memory,
-                                                                                        abstract_sum, link_predictor,
-                                                                                        test_data,
-                                                                                        full_pos_data, full_t, full_msg,
-                                                                                        full_nodes, full_dst,
-                                                                                        statistics,
-                                                                                        test_old_mask,
-                                                                                        nn_test_mask,
-                                                                                        nn_one_test_mask,
-                                                                                        nn_two_test_mask,
-                                                                                        neg_test_mask)
+            test_old_mar, test_old_miss_record, \
+            test_nn_mar, test_nn_miss_record, \
+            test_nn_one_mar, test_nn_one_miss_record, \
+            test_nn_two_mar, test_nn_two_miss_record = test_temporal_recommendation(gnn, memory,
+                                                                                    abstract_sum, link_predictor,
+                                                                                    test_data,
+                                                                                    full_pos_data, full_t, full_msg,
+                                                                                    full_nodes, full_dst,
+                                                                                    statistics,
+                                                                                    test_old_mask,
+                                                                                    nn_test_mask,
+                                                                                    nn_one_test_mask,
+                                                                                    nn_two_test_mask,
+                                                                                    neg_test_mask)
 
             def print_scores(prefix, mar, miss_times, miss_rate):
                 print(f"{prefix}_{mar=:.4f}, {prefix}_{miss_times=:.4f}, {prefix}_{miss_rate=:.4f}")
@@ -843,24 +1203,24 @@ def main(args):
         elif args.task == "link_prediction":
 
             val_ap, val_auc, val_pos_acc, val_neg_acc, \
-                val_old_ap, val_old_auc, val_old_pos_acc, val_old_neg_acc, \
-                val_nn_ap, val_nn_auc, val_nn_pos_acc, val_nn_neg_acc, \
-                val_nn_one_ap, val_nn_one_auc, val_nn_one_pos_acc, val_nn_one_neg_acc, \
-                val_nn_two_ap, val_nn_two_auc, val_nn_two_pos_acc, val_nn_two_neg_acc, \
-                _ = test(args, gnn, memory, link_predictor,
-                         val_data, full_pos_data, full_t, full_msg, full_nodes, full_dst, statistics,
-                         val_old_mask, nn_val_mask, nn_one_val_mask, nn_two_val_mask)
+            val_old_ap, val_old_auc, val_old_pos_acc, val_old_neg_acc, \
+            val_nn_ap, val_nn_auc, val_nn_pos_acc, val_nn_neg_acc, \
+            val_nn_one_ap, val_nn_one_auc, val_nn_one_pos_acc, val_nn_one_neg_acc, \
+            val_nn_two_ap, val_nn_two_auc, val_nn_two_pos_acc, val_nn_two_neg_acc, \
+            _ = test(args, gnn, memory, link_predictor,
+                     val_data, full_pos_data, full_t, full_msg, full_nodes, full_dst, statistics,
+                     val_old_mask, nn_val_mask, nn_one_val_mask, nn_two_val_mask)
 
             test_ap, test_auc, test_pos_acc, test_neg_acc, \
-                test_old_ap, test_old_auc, test_old_pos_acc, test_old_neg_acc, \
-                test_nn_ap, test_nn_auc, test_nn_pos_acc, test_nn_neg_acc, \
-                test_nn_one_ap, test_nn_one_auc, test_nn_one_pos_acc, test_nn_one_neg_acc, \
-                test_nn_two_ap, test_nn_two_auc, test_nn_two_pos_acc, test_nn_two_neg_acc, \
-                test_temporal_neg_acc = test(args, gnn, memory, link_predictor,
-                                             test_data, full_pos_data, full_t, full_msg, full_nodes, full_dst,
-                                             statistics,
-                                             test_old_mask, nn_test_mask, nn_one_test_mask, nn_two_test_mask,
-                                             neg_test_mask)
+            test_old_ap, test_old_auc, test_old_pos_acc, test_old_neg_acc, \
+            test_nn_ap, test_nn_auc, test_nn_pos_acc, test_nn_neg_acc, \
+            test_nn_one_ap, test_nn_one_auc, test_nn_one_pos_acc, test_nn_one_neg_acc, \
+            test_nn_two_ap, test_nn_two_auc, test_nn_two_pos_acc, test_nn_two_neg_acc, \
+            test_temporal_neg_acc = test(args, gnn, memory, link_predictor,
+                                         test_data, full_pos_data, full_t, full_msg, full_nodes, full_dst,
+                                         statistics,
+                                         test_old_mask, nn_test_mask, nn_one_test_mask, nn_two_test_mask,
+                                         neg_test_mask)
 
             def print_scores(prefix, ap, auc, pos_acc, neg_acc):
                 print(f"{prefix}_{ap=:.4f}, {prefix}_{auc=:.4f}, {prefix}_{pos_acc=:.4f}, {prefix}_{neg_acc=:.4f}")
@@ -888,6 +1248,9 @@ if __name__ == "__main__":
     all_args.device = torch.device("cuda" if not all_args.cpu_only and torch.cuda.is_available() else "cpu")
     print(all_args)
 
+    assert all_args.use_memory == False or (all_args.mode != "tgat" and all_args.mode != "distance_encoding"), \
+        "tgat 和 distance_encoding 不支持 memory"
+
     # prepare_data()
     # prepare_models()
     device = all_args.device
@@ -897,4 +1260,3 @@ if __name__ == "__main__":
 
     seen_nodes = []
     main(all_args)
-

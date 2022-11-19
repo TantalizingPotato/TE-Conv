@@ -18,7 +18,8 @@ def sum(x, dim=-1):
 
 
 class AbstractSum(torch.nn.Module):
-    def __init__(self, in_channels, num_basis, basis='powerlaw', mc_num_surv=1, mc_num_time=3):
+    def __init__(self, in_channels, num_basis, basis='powerlaw', mc_num_surv=1, mc_num_time=3,
+                 device=torch.device("cpu")):
         super(AbstractSum, self).__init__()
 
         self.num_basis = num_basis
@@ -48,6 +49,8 @@ class AbstractSum(torch.nn.Module):
         self.mc_num_time = mc_num_time
         # self.lin_dst = Linear(in_channels, in_channels)
         # self.lin_final = Linear(in_channels, 1)
+        self.device = device
+        self.to(device)
 
     def kernel(self, tau, weights):
 
@@ -58,7 +61,7 @@ class AbstractSum(torch.nn.Module):
             # if torch.isnan(out).any() or torch.isinf(out).any(): print(f'def kernel: out:{out}')
         elif self.basis == 'sigmoid':
             alphas, betas, delta = weights
-            out = alphas * torch.sigmoid(betas * tau + delta)
+            out = alphas * torch.sigmoid(   betas * tau + delta)
         elif self.basis == 'cosine' or self.basis == 'cos':
             alphas, betas, delta = weights
             out = alphas * torch.cos(betas * tau + delta)
@@ -192,9 +195,10 @@ class AbstractSum(torch.nn.Module):
 
         return out
 
-    def estimate_time(self, z_src, z_dst):
-        weights = self.weight_layer(torch.cat((z_src, z_dst), dim=-1))
-        params = torch.split(weights, self.num_basis, dim=-1)
+    def estimate_time(self, z_src, z_dst, params=None, return_params=False):
+        if params is None:
+            weights = self.weight_layer(torch.cat((z_src, z_dst), dim=-1))  # (batch_size, num_param*num_basis)
+            params = torch.split(weights, self.num_basis, dim=-1)
 
         # if torch.isnan(params[0]).any():
         #     print(f"def estimate_time: computed params:{params}, weights:{weights},"
@@ -206,7 +210,7 @@ class AbstractSum(torch.nn.Module):
         # mc_time_s = torch.exp(-mc_time_delta_t) # replace variable t with variable s to compute the improper integral
 
         sampler = Uniform(torch.zeros(z_src.size(0), self.mc_num_time), torch.ones(z_src.size(0), self.mc_num_time))
-        mc_time_points = sampler.sample()
+        mc_time_points = sampler.sample().to(self.device)
         mc_time_t = - torch.log(mc_time_points)
 
         # num_param-sized list of tensor(batch_size, mc_num, num_basis)
@@ -221,11 +225,14 @@ class AbstractSum(torch.nn.Module):
         #     print(f"def estimate_time:  {mc_time_integrand}, {mc_time_t}, "
         #           f"mc_time_likelihood: {mc_time_likelihood}, {mc_time_points}")
 
-        return mc_time_integral
+        if return_params:
+            return mc_time_integral, params
+        else:
+            return mc_time_integral
 
 
 class DyrepAbstractSum(torch.nn.Module):
-    def __init__(self, in_channels, mc_num_surv=1, mc_num_time=3):
+    def __init__(self, in_channels, mc_num_surv=1, mc_num_time=3, device=torch.device("cpu")):
         super(DyrepAbstractSum, self).__init__()
 
         # self.weight_layer = Linear(in_channels, 1, bias=False)
@@ -240,6 +247,8 @@ class DyrepAbstractSum(torch.nn.Module):
         self.lin_src = Linear(in_channels // 2, in_channels // 2)
         self.lin_dst = Linear(in_channels // 2, in_channels // 2)
         self.lin_final = Linear(in_channels // 2, 1)
+        self.device = device
+        self.to(device)
 
     def forward(self, z_src, z_dst, delta_t):
 
@@ -294,6 +303,7 @@ class DyrepAbstractSum(torch.nn.Module):
             #     f"def compensator_func: computed params: {params}")
         mc_delta_t = delta_t.unsqueeze(-1).repeat_interleave(self.mc_num_surv, dim=-1)  # (batch_size, mc_num)
 
+        # print(f"mc_delta_t: {mc_delta_t}")
         sampler = Uniform(torch.zeros_like(mc_delta_t).float(), mc_delta_t.float())
         mc_points = sampler.sample()
 
@@ -305,6 +315,8 @@ class DyrepAbstractSum(torch.nn.Module):
 
         mc_int = self.intensity_func(mc_points, params=mc_params, return_params=False)
 
+        # print(f"mc_int.device: {mc_int.device}")
+        # print(f"delta_t.device: {delta_t.device}")
         compensator = mc_int.sum(-1) * delta_t / self.mc_num_surv
 
         # if torch.isnan(compensator).any():
@@ -341,11 +353,12 @@ class DyrepAbstractSum(torch.nn.Module):
 
         return out
 
-    def estimate_time(self, z_src, z_dst):
-        # params = self.weight_layer(torch.cat((z_src, z_dst), dim=-1)).squeeze(-1)
-        h = self.lin_src(z_src) + self.lin_dst(z_dst)
-        h = h.relu()
-        params = self.lin_final(h).squeeze(-1)
+    def estimate_time(self, z_src, z_dst, params=None, return_params=False):
+        if params is None:
+            # params = self.weight_layer(torch.cat((z_src, z_dst), dim=-1)).squeeze(-1)
+            h = self.lin_src(z_src) + self.lin_dst(z_dst)
+            h = h.relu()
+            params = self.lin_final(h).squeeze(-1)
 
         # if torch.isnan(params[0]).any():
         #     print(f"def estimate_time: computed params:{params}, weights:{weights},"
@@ -357,7 +370,8 @@ class DyrepAbstractSum(torch.nn.Module):
         # mc_time_s = torch.exp(-mc_time_delta_t) # replace variable t with variable s to compute the improper integral
 
         sampler = Uniform(torch.zeros(z_src.size(0), self.mc_num_time), torch.ones(z_src.size(0), self.mc_num_time))
-        mc_time_points = sampler.sample()
+        mc_time_points = sampler.sample().to(self.device)
+        # print(f"mc_time_points.device: {mc_time_points.device}")
         mc_time_t = - torch.log(mc_time_points)
 
         # num_param-sized list of tensor(batch_size, mc_num, num_basis)
@@ -367,11 +381,14 @@ class DyrepAbstractSum(torch.nn.Module):
         mc_time_integrand = mc_time_t * mc_time_likelihood / mc_time_points
         # mc_time_integrand = mc_time_likelihood / mc_time_points
         # print(f"mc_time_t:{mc_time_t}, mc_time_likelihood:{mc_time_likelihood}, mc_time_points:{mc_time_points}")
-        print(f"params:{params}, intensity:{softplus(params)}")
+        # print(f"params:{params}, intensity:{softplus(params)}")
         mc_time_integral = mc_time_integrand.sum(-1) / self.mc_num_time
 
         # if torch.isnan(mc_time_integral).any():
         #     print(f"def estimate_time:  {mc_time_integrand}, {mc_time_t}, mc_time_likelihood: "
         #           f"{mc_time_likelihood}, {mc_time_points}")
 
-        return mc_time_integral
+        if return_params:
+            return mc_time_integral, params
+        else:
+            return mc_time_integral

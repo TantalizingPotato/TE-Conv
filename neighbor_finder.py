@@ -207,6 +207,11 @@ class NeighborFinder:
     cut_time_l: List[float],
     num_neighbors: int
     """
+    if isinstance(central_nodes, torch.Tensor):
+      central_nodes = central_nodes.cpu().numpy()
+    if isinstance(timestamp, torch.Tensor):
+      timestamp = timestamp.cpu().numpy()
+
     central_nodes = np.unique(central_nodes).astype(int)
     all_nodes = central_nodes
 

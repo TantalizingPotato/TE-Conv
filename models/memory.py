@@ -29,7 +29,7 @@ class TimeEncoder(torch.nn.Module):
         #     out = self.lin(t.view(-1,1))
         # else:
         #     out = self.lin(t.view(-1,1)).cos()
-        out = self.lin(t.view(-1, 1)).cos()
+        out = self.lin(t.view(-1, 1).float()).cos()
         # out = self.lin(t.view(-1, 1))
         return out
 
@@ -188,8 +188,14 @@ class TGNMemory(torch.nn.Module):
         # Get local copy of updated memory.
         memory = self.gru(aggr, self.memory[n_id])
 
-        # Get local copy of updated `last_update`.
-        last_update = self.last_update.scatter(0, idx, t)[n_id]
+        if idx.size(0) == 0 or t.size(0) == 0:
+            last_update = self.last_update[n_id]
+        else:
+            # Get local copy of updated `last_update`.
+            last_update = self.last_update.scatter(0, idx, t)[n_id]
+
+        # if last_update.nonzero().size(0) > 0:
+        #     print(f"last_update: {last_update}")
 
         return memory, last_update
 
