@@ -53,7 +53,7 @@ python main.py --dataset_size 200000 --learning_rate 0.001 --cpu_only False --mo
 
 ```{txt}
 optional arguments:
---mode type=str, default="tgn", the model name, choices=["tgn", "dyrep", "tgat", "jodie", "distance_encoding"]
+--mode type=str, default="tgn", the model name, choices=["tgn", "dyrep", "tgat", "jodie"]
 
 
 --name type=str, default="wikipedia", used dataset name
