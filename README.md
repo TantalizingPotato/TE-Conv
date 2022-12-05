@@ -43,14 +43,23 @@ Other datasets (e.g. ia-enron-employees) are from
 
 ### Code Structure
 -data/
+
 code about data processing and data class
+
 -models/
+
 model code, including GNN model, TPP model, time encoding model, memory model and link predictor
+
 -arg_parser.py
+
 declaration of arguments
+
 -neighbor_finder.py
+
 tool for finding temporal neighbors for nodes
+
 -main.py
+
 the entry point of the project code
 
 
