@@ -160,13 +160,14 @@ def get_data(name, val_ratio=0.15, test_ratio=0.15, use_neg=True, use_msg=True, 
 
     neg_test_mask = neg_test_mask[np.nonzero(test_range)[0]]
 
-    src = torch.from_numpy(sources).to(torch.long)
-    dst = torch.from_numpy(destinations).to(torch.long)
-    t = torch.from_numpy(timestamps).to(torch.long)
-    e_id = torch.from_numpy(full_df.e_id.values).to(torch.long)
-    msg = torch.from_numpy(messages).to(torch.long)
+    src = torch.from_numpy(sources).to(torch.long).to(device)
+    dst = torch.from_numpy(destinations).to(torch.long).to(device)
+    t = torch.from_numpy(timestamps).to(torch.long).to(device)
+    e_id = torch.from_numpy(full_df.e_id.values).to(torch.long).to(device)
+    msg = torch.from_numpy(messages).to(torch.long).to(device)
 
-    data = TemporalData(src=src, dst=dst, t=t, e_id=e_id).to(device)
+    # data = TemporalData(src=src, dst=dst, t=t, e_id=e_id).to(device)
+    data = TemporalData(src=src, dst=dst, t=t, e_id=e_id)
 
     num_train_events = train_mask.sum()
 
@@ -178,8 +179,11 @@ def get_data(name, val_ratio=0.15, test_ratio=0.15, use_neg=True, use_msg=True, 
     val_range = torch.from_numpy(val_range)
     test_range = torch.from_numpy(test_range)
 
-    return data[valid_mask], data[train_mask], data[val_range], data[test_range], msg.to(device), t.to(device), \
-           val_old_mask, test_old_mask, nn_val_mask, nn_test_mask, nn_one_val_mask, nn_one_test_mask, nn_two_val_mask, nn_two_test_mask, neg_test_mask, \
+    return data[valid_mask], \
+           data[train_mask].prepare_t_batch(), data[val_range].prepare_t_batch(), data[test_range].prepare_t_batch(), \
+           msg.to(device), t.to(device), \
+           val_old_mask, test_old_mask, nn_val_mask, nn_test_mask, nn_one_val_mask, nn_one_test_mask, nn_two_val_mask, \
+           nn_two_test_mask, neg_test_mask, \
            int(n_total_unique_nodes_real), num_train_events, min_dst_idx, max_dst_idx
 
 

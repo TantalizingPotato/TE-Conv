@@ -35,7 +35,7 @@ def get_args():
                         help="number of training epochs")
     parser.add_argument("--learning_rate", type=float, default=0.001,
                         help="learning rate")
-    parser.add_argument("--backprop_every_n_batches", type=int, default=20,
+    parser.add_argument("--backprop_every_n_batches", type=int, default=1,
                         help="if set to n, backpropagation will be done every n batches")
     parser.add_argument("--node_feature_dim", type=int, default=100,
                         help="for distance_encoding only, if de_shortest_path and de_random_walk are both false,"

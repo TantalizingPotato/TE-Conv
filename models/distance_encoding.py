@@ -48,7 +48,7 @@ def get_features_rw_sample(adj, node_set, rw_depth):
     return features_rw
 
 
-def distance_encoding(sources, destinations, timestamps, neighbor_finder, n_neighbors, USE_MEMORY_EMBEDDING,
+def distance_encoding(args, sources, destinations, timestamps, neighbor_finder, n_neighbors, USE_MEMORY_EMBEDDING,
                       DE_SHORTEST_PATH,
                       DE_RANDOM_WALK, NODE_FEATURE_DIM, full_t, full_msg, memory, gnn, k=2):
     data_list = []
@@ -64,7 +64,9 @@ def distance_encoding(sources, destinations, timestamps, neighbor_finder, n_neig
                                                                                               n_neighbors=n_neighbors,
                                                                                               k=k)
 
-        n_id, edge_index, e_id = torch.from_numpy(n_id), torch.from_numpy(edge_index), torch.from_numpy(e_id)
+        n_id, edge_index, e_id = torch.from_numpy(n_id).to(args.device),\
+                                 torch.from_numpy(edge_index).to(args.device), \
+                                 torch.from_numpy(e_id).to(args.device)
         num_nodes = n_id.size(0)
         # lgh: TypeError: can't convert cuda:0 device type tensor to numpy.
         # Use Tensor.cpu() to copy the tensor to host memory first.
@@ -72,25 +74,25 @@ def distance_encoding(sources, destinations, timestamps, neighbor_finder, n_neig
         new_G.add_nodes_from(np.arange(num_nodes, dtype=np.int32))
         assert (new_G.number_of_nodes() == num_nodes)
 
-        x_list = [torch.zeros(num_nodes, 0).float()]
+        x_list = [torch.zeros((num_nodes, 0), dtype=torch.float32, device=args.device)]
 
         assoc[n_id] = torch.arange(n_id.size(0))
         new_root_ids = assoc[root_nodes]
 
         if DE_SHORTEST_PATH:
             features_sp_sample = get_features_sp_sample(new_G, new_root_ids.cpu().numpy(), max_sp=3)
-            features_sp_sample = torch.from_numpy(features_sp_sample).float()
+            features_sp_sample = torch.from_numpy(features_sp_sample).float().to(args.device)
             x_list.append(features_sp_sample)
 
         if DE_RANDOM_WALK:
             adj = np.asarray(nx.adjacency_matrix(new_G, nodelist=np.arange(new_G.number_of_nodes(), dtype=np.int32))
                              .todense().astype(np.float32))  # [n_nodes, n_nodes]
             features_rw_sample = get_features_rw_sample(adj, new_root_ids.cpu().numpy(), rw_depth=3)
-            features_rw_sample = torch.from_numpy(features_rw_sample).float()
+            features_rw_sample = torch.from_numpy(features_rw_sample).float().to(args.device)
             x_list.append(features_rw_sample)
 
         if not DE_SHORTEST_PATH and not DE_RANDOM_WALK:
-            x_list.append(torch.zeros(num_nodes, NODE_FEATURE_DIM).float())
+            x_list.append(torch.zeros((num_nodes, NODE_FEATURE_DIM), dtype=torch.float32, device=args.device))
 
         x = torch.cat(x_list, dim=-1)
 
@@ -120,6 +122,10 @@ def distance_encoding(sources, destinations, timestamps, neighbor_finder, n_neig
     e_id = batch.e_id
     set_indices_batch = get_root_nodes_indices(batch)
 
+    # print(f"x: {x.device},"
+    #       f"edge_index: {edge_index.device},"
+    #       f"timestamps: {timestamps.device},"
+    #       f"full_msg: {full_msg.device}")
     z = gnn(x, edge_index, timestamps[batch.batch[edge_index[1]]] - full_t[e_id], full_msg[e_id])
 
     z_set_indices = z[set_indices_batch]

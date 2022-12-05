@@ -2,10 +2,13 @@ import copy
 
 import torch
 import numpy as np
+from tqdm import tqdm
+import time
 
 
 class TemporalData(object):
-    def __init__(self, src=None, dst=None, t=None, msg=None, y=None, **kwargs):
+    def __init__(self, src=None, dst=None, t=None, msg=None, y=None, useTBatch=True, **kwargs):
+
         self.src = src
         self.dst = dst
         self.t = t
@@ -15,10 +18,43 @@ class TemporalData(object):
         for key, item in kwargs.items():
             self[key] = item
 
-    def __getitem__(self, idx):
-        if isinstance(idx, str):
-            return getattr(self, idx, None)
+        self.use_t_batch = useTBatch
+        self.t_batch_valid = False
+        if self.use_t_batch:
+            self.prepare_t_batch()
 
+    def prepare_t_batch(self):
+        start_time = time.time()
+        self.use_t_batch = True
+        batchList = []
+        batchIdxList = list()
+        for i in range(0, self.num_events):
+            batchIdxList.append(torch.Tensor())
+
+        maxTS = np.zeros(self.num_nodes)
+
+        milestone_basis = self.num_events // 10
+        # for i in tqdm(range(0, self.num_events), desc='[Preparing.]'):
+        for i in range(0, self.num_events):
+            nowTS = 1 + int(max(maxTS[self[i].src], maxTS[self[i].dst]))
+            maxTS[self[i].src] = maxTS[self[i].dst] = nowTS
+            batchIdxList[nowTS] = torch.cat((batchIdxList[nowTS], torch.tensor([i])))
+            if milestone_basis != 0 and ((i + 1) % milestone_basis == 0 or (i + 1) == self.num_events):
+                print(f"{100 * (i + 1) / self.num_events:.2f}% finished for t-batch preparation ...")
+
+        for IdxList in batchIdxList:
+            if IdxList.size(0) > 0:
+                batchList.append(self[IdxList.to(torch.long)])
+        self.batch_list = batchList
+        self.t_batch_valid = True
+        method_time = time.time() - start_time
+        print(f"t-batch preparation finished in {method_time:.2f}s")
+        return self
+
+    def __getitem__(self, idx):
+
+        if isinstance(idx, str):  # self[str(idx)]
+            return getattr(self, idx, None)
         if isinstance(idx, int):
             idx = torch.tensor([idx])
         if isinstance(idx, (list, tuple)):
@@ -33,11 +69,20 @@ class TemporalData(object):
                 f'Only strings, integers, slices (`:`), list, tuples, and '
                 f'long or bool tensors are valid indices (got '
                 f'{type(idx).__name__}).')
-
+        # only tensor function implemented here
         data = copy.copy(self)
         for key, item in data:
-            if item.shape[0] == self.num_events:
+            if isinstance(item, bool):
+                continue
+            # if item.shape[0] == self.num_events:
+            if len(item) == self.num_events:  # edited by lgh
                 data[key] = item[idx]
+        # recompute t-batch, added by lgh
+        if (isinstance(idx, (list, tuple)) or isinstance(idx, slice) or
+            isinstance(idx, torch.Tensor) and (idx.dtype == torch.long or idx.dtype == torch.bool)
+            and idx.size(0) > 1) and \
+                data.num_events != self.num_events and self.use_t_batch:
+            data.t_batch_valid = False
         return data
 
     def __setitem__(self, key, value):
@@ -78,6 +123,10 @@ class TemporalData(object):
         else:
             return self.src.events(0)
 
+    @property
+    def num_batch(self):
+        return len(self.batch_list)
+
     def __apply__(self, item, func):
         if torch.is_tensor(item):
             return func(item)
@@ -110,9 +159,36 @@ class TemporalData(object):
 
         return self[:val_idx], self[val_idx:test_idx], self[test_idx:]
 
-    def seq_batches(self, batch_size):
-        for start in range(0, self.num_events, batch_size):
-            yield self[start:start + batch_size]
+    # modified by fdf
+    def seq_batches(self, batch_size, useTBatch=True):
+        # print('seq_batches called')
+        # print('TBatch:{}'.format(useTBatch))
+
+        # batchList = []
+        if self.use_t_batch == False:
+            for start in range(0, self.num_events, batch_size):
+                # batchList.append(self[start:start + batch_size])
+                yield self[start:start + batch_size]
+        # else:
+        #     batchIdxList = list()
+        #     for i in range(0, self.num_events): batchIdxList.append(torch.Tensor())
+        #
+        #     maxTS = np.zeros(self.num_nodes)
+        #
+        #     for i in tqdm(range(0, self.num_events), desc='[Preparing.]'):
+        #         nowTS = 1 + int(max(maxTS[self[i].src], maxTS[self[i].dst]))
+        #         maxTS[self[i].src] = maxTS[self[i].dst] = nowTS
+        #         batchIdxList[nowTS] = torch.cat((batchIdxList[nowTS], torch.tensor([i])))
+        #
+        #     for IdxList in batchIdxList:
+        #         if IdxList.size(0) > 0:
+        #             batchList.append(self[IdxList.to(torch.long)])
+        #     # print('<finished.>')
+        #     # batch : TemporalData(src,dst,t,e_id)
+        else:
+            assert self.t_batch_valid
+            for item in self.batch_list:
+                yield item
 
     def __cat_dim__(self, key, value):
         return 0

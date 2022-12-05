@@ -256,7 +256,7 @@ class IdentityMessage(torch.nn.Module):
                  mode: str = "tgn"):
         super(IdentityMessage, self).__init__()
         self.mode = mode.lower()
-        if self.mode == 'jodie' or self.mode == 'tgn' or self.mode == 'distance_encoding':
+        if self.mode == 'jodie' or self.mode == 'tgn' or self.mode == 'distance_encoding' or self.mode == "tgat":
             self.out_channels = raw_msg_dim + 2 * memory_dim + time_dim
         elif self.mode == 'dyrep' or mode == 'src_emb':
             self.out_channels = raw_msg_dim + memory_dim + embedding_dim + time_dim
@@ -267,7 +267,7 @@ class IdentityMessage(torch.nn.Module):
 
     def forward(self, z_src, z_dst, raw_msg, t_enc, src_emb, dst_emb):
 
-        if self.mode == 'jodie' or self.mode == 'tgn' or self.mode == 'distance_encoding':
+        if self.mode == 'jodie' or self.mode == 'tgn' or self.mode == 'distance_encoding' or self.mode == "tgat":
             out = torch.cat([z_src, z_dst, raw_msg, t_enc], dim=-1)
         elif self.mode == 'dyrep':
             out = torch.cat([z_src, dst_emb, raw_msg, t_enc], dim=-1)

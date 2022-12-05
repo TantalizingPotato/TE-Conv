@@ -167,12 +167,12 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
     # set the models to state of training
     if args.use_memory:
         memory.train()
-        memory.reset_state()  # Start with a fresh memory.
+    memory.reset_state()  # Start with a fresh memory.
     gnn.train()
     link_predictor.train()
     abstract_sum.train()
 
-    neighbor_finder = get_neighbor_finder(train_data)
+    # neighbor_finder = get_neighbor_finder(train_data)
 
     total_loss = 0
 
@@ -180,7 +180,8 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
     loss = None
     optimizer.zero_grad()
 
-    num_batch = math.ceil(train_data.num_events / args.batch_size)
+    # num_batch = math.ceil(train_data.num_events / args.batch_size)
+    num_batch = train_data.num_batch
     milestone_basis = num_batch // 5
 
     torch.manual_seed(12345)  # Ensure deterministic sampling across epochs.
@@ -194,20 +195,21 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
     # print(f"last_update[100]: {all_last_update[100]}")
     count_trained_instance = 0
     for i, batch in enumerate(train_data.seq_batches(batch_size=args.batch_size)):
+    # for i, batch in tqdm(enumerate(train_data.seq_batches(batch_size=args.batch_size)), total=num_batch):
         # for batch in inference_data.seq_batches(batch_size=1):
         src, dst, t, e_id = get_valid_data(batch)
 
         if src.size(0) == 0:
-            print("No pos_sample in this batch, continue")
+            print("train_time_prediction: No pos_sample in this batch, continue")
             continue
 
-        if args.only_predict_last_events_time:
-            src, dst, t, e_id = retrieve_last_events(src, dst, t, e_id)
+        # if args.only_predict_last_events_time:
+        #     src, dst, t, e_id = retrieve_last_events(src, dst, t, e_id)
 
         dyrep_emb = None
         if args.mode == "distance_encoding":
 
-            z_src, z_dst = distance_encoding(src, dst, t, neighbor_finder,
+            z_src, z_dst = distance_encoding(args, src, dst, t, neighbor_finder,
                                              n_neighbors=args.neighbor_size,
                                              USE_MEMORY_EMBEDDING=args.use_memory_embedding,
                                              DE_SHORTEST_PATH=args.de_shortest_path, DE_RANDOM_WALK=args.de_random_walk,
@@ -226,11 +228,15 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
 
             assoc = get_map_tensor(n_id)
 
-            all_last_update = memory.last_update
+            # all_last_update = memory.last_update
             # print(f"all_last_update: {all_last_update}")
             # print(f"last_update[100]: {all_last_update[100]}")
             # print(f"all_last_update[n_id]: {all_last_update[n_id]}")
-            z, last_update = memory(n_id)
+            if args.use_memory:
+                z, last_update = memory(n_id)
+            else:
+                _, last_update = memory(n_id)
+                z = torch.zeros((n_id.size(0), args.memory_dim), dtype=torch.float, device=args.device)
 
             dyrep_emb, z_src, z_dst = get_src_and_dst_embeddings(args, gnn, edge_index, src, dst, t, full_msg,
                                                                  edge_id, z, last_update, statistics, assoc)
@@ -243,7 +249,7 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
         # print(f"last_update_src.device: {last_update_src.device}")
         # print(f"last_update_dst.device: {last_update_dst.device}")
         t_true = (t - torch.max(last_update_src, last_update_dst)).float()
-        pos_delta_t = t_true
+
         # print(f"torch.max(last_update_src, last_update_dst).device: {torch.max(last_update_src, last_update_dst).device}")
         # print(f"t_true.device: {t_true.device}")
         # print(f"pos_delta_t.device: {pos_delta_t.device}")
@@ -254,7 +260,8 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
         # print(f"last_update_dst: {last_update_dst}")
 
         # seen_mask = (t_true != t) & (t_true != 0)
-        seen_mask = (t - t_true> 1e-3) & (t_true - 0 > 1e-3)
+        # seen_mask = (t - t_true > 1e-3) & (t_true - 0 > 1e-3)
+        seen_mask = (last_update_src == last_update_dst) &(t - t_true > 1e-3) & (t_true - 0 > 1e-3)
         # print(f"t_true: {t_true}")
         # print(f"t: {t}")
         # print(f"(t_true - t > 1e-3): {(t_true - t > 1e-3)}")
@@ -265,7 +272,9 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
             = z_src[seen_mask], z_dst[seen_mask], t_true[seen_mask], \
               src[seen_mask], dst[seen_mask], e_id[seen_mask]
 
-        if seen_z_src.size(0) == 0:
+        pos_delta_t = seen_t_true
+        batch_size = seen_z_src.size(0)
+        if batch_size == 0:
             # print(f"t: {t}")
             # print(f"t_true: {t_true}")
             # print(f"e_id: {e_id}, src:{src}, dst:{dst}, all nodes unseen in this batch, continue to the next batch")
@@ -283,9 +292,11 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
         t_estimated, abstract_sum_params = abstract_sum.estimate_time(z_src[seen_mask], z_dst[seen_mask],
                                                                       return_params=True)
         t_estimated = torch.clamp(
-            t_estimated * 5000,  # t_estimated * 5000
+            t_estimated * 100,  # t_estimated * 5000
             max=100000)
 
+        # print(f"seen_t_true: {seen_t_true},"
+        #       f"t_estimated: {t_estimated}")
         # seen_t_true = seen_t_true.cpu().numpy()
         # print(f"e_id: {seen_e_id}, src:{seen_src}, dst:{seen_pos_dst}, "
         #       f"t_estimated: {t_estimated}, t_true: {t_true}")
@@ -313,12 +324,12 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
 
         int_vals = abstract_sum.intensity_func(pos_delta_t, seen_z_src, seen_z_pos_dst, params=abstract_sum_params,
                                                return_params=False)
-        loss_cur_batch = - torch.log(int_vals).sum() / seen_z_src.size(0)
+        loss_cur_batch = - torch.log(int_vals).sum() / batch_size
         # print(f"pos_delta_t.device: {pos_delta_t.device}")
         loss_cur_batch += args.n_coefficient * \
                           abstract_sum.compensator_func(pos_delta_t, seen_z_src, seen_z_pos_dst,
-                                                        params=abstract_sum_params).sum() / seen_z_src.size(0)
-        loss_cur_batch_mse = loss_function_mse(t_estimated, seen_t_true)
+                                                        params=abstract_sum_params).sum() / batch_size
+        loss_cur_batch_mse = loss_function_mse(t_estimated, seen_t_true) / batch_size
         loss_cur_batch += args.mse_loss_coefficient * loss_cur_batch_mse
 
         if loss is None:
@@ -328,16 +339,18 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
         if torch.isnan(loss).any() or torch.isinf(loss).any():  # print(f"{i}, loss: {loss}")
             print(f"loss: {loss}")
 
-        total_loss += float(loss_cur_batch) * batch.num_events
+        # total_loss += float(loss_cur_batch) * batch.num_events
+        total_loss += float(loss_cur_batch) * batch_size
 
-        count_trained_instance += 1
+        # count_trained_instance += 1
+        count_trained_instance += batch_size
 
         msg = full_msg[e_id]
-        if args.use_memory:
-            if args.mode == "dyrep":
-                memory.update_state(src, dst, t, msg, src_emb=dyrep_emb[assoc[src]], dst_emb=dyrep_emb[assoc[dst]])
-            else:
-                memory.update_state(src, dst, t, msg)
+        # if args.use_memory:
+        if args.mode == "dyrep":
+            memory.update_state(src, dst, t, msg, src_emb=dyrep_emb[assoc[src]], dst_emb=dyrep_emb[assoc[dst]])
+        else:
+            memory.update_state(src, dst, t, msg)
 
         if (i + 1) % args.backprop_every_n_batches == 0 or i + 1 == num_batch:
             loss.backward()
@@ -353,7 +366,7 @@ def train_time_prediction(args, gnn, memory, abstract_sum, link_predictor, all_p
             print(f"{100 * (i + 1) / num_batch:.2f}% trained for this epoch ...")
 
     print(f"count_trained_instance: {count_trained_instance}")
-    return total_loss / count_trained_instance
+    return total_loss / (count_trained_instance + 1e-9)
 
 
 @torch.no_grad()
@@ -377,10 +390,15 @@ def test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
     all_t_estimated = torch.tensor([], dtype=torch.float).to(device)
 
     for batch in inference_data.seq_batches(batch_size=1):
+        # src, dst, t, e_id = batch.src, batch.dst, batch.t, batch.e_id
+        # print(f"src:{src},"
+        #       f"dst:{dst},"
+        #       f"t:{t}"
+        #       f"e_id:{e_id}")
         src, dst, t, e_id = get_valid_data(batch)
 
         if src.size(0) == 0:
-            print("No pos_sample in this batch, continue")
+            print("test_time_prediction: No pos_sample in this batch, continue")
             continue
 
         if args.only_predict_last_events_time:
@@ -389,7 +407,7 @@ def test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
         dyrep_emb = None
         if args.mode == "distance_encoding":
 
-            z_src, z_dst = distance_encoding(src, dst, t, neighbor_finder,
+            z_src, z_dst = distance_encoding(args, src, dst, t, neighbor_finder,
                                              n_neighbors=args.neighbor_size,
                                              USE_MEMORY_EMBEDDING=args.use_memory_embedding,
                                              DE_SHORTEST_PATH=args.de_shortest_path, DE_RANDOM_WALK=args.de_random_walk,
@@ -418,18 +436,20 @@ def test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
         t_true = t - torch.max(torch.cat((last_update_src, last_update_dst), dim=-1), dim=-1)[0]
 
         # seen_mask = (t_true != t) & (t_true != 0)
-        seen_mask = (t - t_true > 1e-3) & (t_true - 0 > 1e-3)
+        # seen_mask = (t - t_true > 1e-3) & (t_true - 0 > 1e-3)
+        seen_mask = (last_update_src == last_update_dst) & (t - t_true > 1e-3) & (t_true - 0 > 1e-3)
         # seen_mask = (last_update_src == last_update_dst) & (t_true != t)
         seen_z_src, seen_z_pos_dst, seen_t_true, seen_src, seen_pos_dst, seen_e_id \
             = z_src[seen_mask], z_dst[seen_mask], t_true[seen_mask], \
               src[seen_mask], dst[seen_mask], e_id[seen_mask]
 
-        if seen_z_src.size(0) == 0:
+        batch_size = seen_z_src.size(0)
+        if batch_size == 0:
             # print(f"e_id: {e_id}, src:{src}, dst:{dst}, all nodes unseen in this batch, continue to the next batch")
             pass
         else:
             t_estimated = torch.clamp(
-                abstract_sum.estimate_time(z_src[seen_mask], z_dst[seen_mask]) * 5000,
+                abstract_sum.estimate_time(z_src[seen_mask], z_dst[seen_mask]) * 100,  # edited by lgh, * 5000
                 max=100000)
             # t_estimated = np.clip(
             #     abstract_sum.estimate_time(z_src[seen_mask], z_dst[seen_mask]).cpu().numpy() * 5000,
@@ -447,6 +467,8 @@ def test_time_prediction(args, gnn, memory, abstract_sum, link_predictor,
             all_t_true, all_t_estimated = torch.cat([all_t_true, seen_t_true]), \
                                           torch.cat([all_t_estimated, t_estimated])
 
+            print(f"seen_t_true: {seen_t_true},"
+                  f"t_estimated: {t_estimated}")
             # all_t_true, all_t_estimated = np.concatenate([all_t_true, seen_t_true]), \
             #                               np.concatenate([all_t_estimated, t_estimated])
 
@@ -584,7 +606,7 @@ def get_map_tensor(n_id_unique):
 
 
 def get_distance_encoding(args, gnn, memory, neighbor_finder, src, dst, neg_dst, t, full_t, full_msg):
-    z_src, z_dst = distance_encoding(src.repeat(args.num_neg_sample + 1), torch.cat([dst, neg_dst]),
+    z_src, z_dst = distance_encoding(args, src.repeat(args.num_neg_sample + 1), torch.cat([dst, neg_dst]),
                                      t.repeat(args.num_neg_sample + 1), neighbor_finder,
                                      n_neighbors=args.neighbor_size,
                                      USE_MEMORY_EMBEDDING=args.use_memory_embedding,
@@ -904,7 +926,7 @@ def test_temporal_recommendation(args, gnn, memory, abstract_sum, link_predictor
             assoc = get_map_tensor(n_id)
             last_update = torch.zeros(len(n_id), device=device)
 
-            z_root, z_candidate = distance_encoding(root_nodes, candidates, recommend_times, neighbor_finder,
+            z_root, z_candidate = distance_encoding(args, root_nodes, candidates, recommend_times, neighbor_finder,
                                                     n_neighbors=args.neighbor_size,
                                                     USE_MEMORY_EMBEDDING=args.use_memory_embedding,
                                                     DE_SHORTEST_PATH=args.de_shortest_path,
@@ -1061,20 +1083,20 @@ def main(args):
     statistics = compute_time_statistics(full_pos_data.src, full_pos_data.dst, full_pos_data.t)
     print("data prepared")
 
-    if args.use_memory:
-        memory = TGNMemory(
-            n_total_unique_nodes_real,
-            full_msg.size(-1),
-            args.memory_dim,
-            args.embedding_dim,
-            args.time_dim,
-            message_module=IdentityMessage(full_msg.size(-1), args.time_dim, args.memory_dim, args.embedding_dim,
-                                           mode=args.mode),
-            aggregator_module=LastAggregator(),
-            mode=args.mode
-        ).to(device)
-    else:
-        memory = None
+    # if args.use_memory:
+    memory = TGNMemory(
+        n_total_unique_nodes_real,
+        full_msg.size(-1),
+        args.memory_dim,
+        args.embedding_dim,
+        args.time_dim,
+        message_module=IdentityMessage(full_msg.size(-1), args.time_dim, args.memory_dim, args.embedding_dim,
+                                       mode=args.mode),
+        aggregator_module=LastAggregator(),
+        mode=args.mode
+    ).to(device)
+    # else:
+    #     memory = None
 
     arg_dict = {"args": args,
                 "num_nodes": n_total_unique_nodes_real,
